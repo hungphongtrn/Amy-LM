@@ -1,0 +1,35 @@
+[project]
+name = "amy-lm"
+version = "0.1.0"
+description = "Amy LM"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "datasets>=2.15.0",
+]
+
+[project.optional-dependencies]
+# Machine A: Alignment (System deps: ffmpeg, libsndfile1)
+alignment = [
+    "nemo_toolkit[asr]",
+    "nemo-forced-aligner",
+    "torch>=2.0.0",
+    "soundfile>=0.12.0",
+]
+wavlm = [
+    "transformers>=4.35.0",
+    "torch>=2.0.0",
+    "soundfile>=0.12.0",
+    "numpy>=1.24.0",
+]
+llm = [
+    "transformers>=4.35.0",
+    "torch>=2.0.0",
+    "numpy>=1.24.0",
+    "accelerate",
+    "sentencepiece",
+    "protobuf",
+]
+upload = [
+    "huggingface_hub>=0.20.0",
+]
