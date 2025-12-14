@@ -1,14 +1,14 @@
 import torch
 import json
 import numpy as np
-from datasets import load_dataset, Features, Value, Array2D
+from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import logging
 
 # CONFIG
 ALIGN_REPO = "hungphongtrn/speech-time-alignment"
 TGT_REPO = "hungphongtrn/llm-features"
-BATCH_SIZE = 8
+BATCH_SIZE = 4
 MODEL_ID = "Qwen/Qwen3-1.7B"
 
 # Set up logging to catch errors without stopping execution
@@ -60,7 +60,7 @@ def get_token_timestamps(token_ids, word_timings, tokenizer):
         aligned_times.append([current_word_start, current_word_end])
         current_word_chars_left -= tok_len
 
-    return np.array(aligned_times, dtype=np.float32)
+    return aligned_times
 
 
 def main():
@@ -75,13 +75,26 @@ def main():
     ).to(device)
     model.eval()
 
-    ds = load_dataset(ALIGN_REPO, split="train")
+    ds = load_dataset(ALIGN_REPO, split="dev")
 
     def extract_batch(batch):
-        # 1. Forward Pass (Batch Level)
-        # Note: batch["text"] must exist in ALIGN_REPO
+        # 1. Parse alignment_json to extract text and word alignments
+        texts = []
+        parsed_alignments = []
+        
+        for align_json_str in batch["alignment_json"]:
+            try:
+                align_data = json.loads(align_json_str)
+                texts.append(align_data.get("text", ""))
+                parsed_alignments.append(align_data.get("word", []))
+            except Exception as e:
+                logging.error(f"Error parsing alignment_json: {e}")
+                texts.append("")
+                parsed_alignments.append([])
+        
+        # 2. Forward Pass (Batch Level)
         inputs = tokenizer(
-            batch["text"], return_tensors="pt", padding=True, truncation=True
+            texts, return_tensors="pt", padding=True, truncation=True
         ).to(device)
 
         with torch.no_grad():
@@ -91,37 +104,36 @@ def main():
         results_feat = []
         results_time = []
 
-        # 2. Process Individual Samples
-        for i, text in enumerate(batch["text"]):
+        # 3. Process Individual Samples
+        for i, text in enumerate(texts):
             try:
                 valid_len = inputs.attention_mask[i].sum().item()
 
-                # Extract Feature
+                # Extract Feature and convert to list of lists
                 feat = states[i, :valid_len, :].cpu().numpy().astype(np.float16)
+                feat_list = feat.tolist()  # Convert numpy array to list of lists
 
-                # Extract Timestamps
-                # Key Check: Ensure 'alignment_json' exists, otherwise fallback/fail gracefully
-                align_raw = batch.get("alignment_json", [None])[i]
-                if align_raw is None:
-                    raise ValueError("Missing alignment_json")
+                # Extract Timestamps using parsed word alignments
+                word_alignments = parsed_alignments[i]
+                if not word_alignments:
+                    raise ValueError("Missing word alignment data")
 
-                align_data = json.loads(align_raw)
                 token_ids = inputs.input_ids[i][:valid_len].cpu().tolist()
-
-                times = get_token_timestamps(token_ids, align_data, tokenizer)
+                times = get_token_timestamps(token_ids, word_alignments, tokenizer)
 
                 # Shape Correction
                 if len(times) != valid_len:
                     # Pad or Truncate
-                    new_times = np.zeros((valid_len, 2), dtype=np.float32)
+                    new_times = [[0.0, 0.0] for _ in range(valid_len)]
                     min_len = min(len(times), valid_len)
                     if min_len > 0:
                         new_times[:min_len] = times[:min_len]
                         # Propagate last valid timestamp to remaining tokens (safer than 0)
-                        new_times[min_len:] = times[min_len - 1]
+                        for j in range(min_len, valid_len):
+                            new_times[j] = times[min_len - 1]
                     times = new_times
 
-                results_feat.append(feat)
+                results_feat.append(feat_list)
                 results_time.append(times)
 
             except Exception as e:
@@ -132,19 +144,13 @@ def main():
 
                 # Return Zero-dummies matching the shape
                 # Feat: [valid_len, 2048], Times: [valid_len, 2]
-                # We need to re-calculate valid_len locally or assume 1
                 v_len = inputs.attention_mask[i].sum().item()
-                results_feat.append(np.zeros((v_len, 2048), dtype=np.float16))
-                results_time.append(np.zeros((v_len, 2), dtype=np.float32))
+                results_feat.append([[0.0] * 2048 for _ in range(v_len)])
+                results_time.append([[0.0, 0.0] for _ in range(v_len)])
 
         return {"llm_feat": results_feat, "llm_times": results_time}
 
-    # Define Schema explicitly to ensure correct storage types
-    features = ds.features.copy()
-    features["llm_feat"] = Array2D(shape=(None, 2048), dtype="float16")
-    features["llm_times"] = Array2D(shape=(None, 2), dtype="float32")
-
-    # Run Map
+    # Run Map without explicit feature schema - let datasets infer from the data
     ds_llm = ds.map(extract_batch, batched=True, batch_size=BATCH_SIZE)
 
     # Push
