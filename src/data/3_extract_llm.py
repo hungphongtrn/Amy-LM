@@ -10,6 +10,7 @@ ALIGN_REPO = "hungphongtrn/speech-time-alignment"
 TGT_REPO = "hungphongtrn/llm-features"
 BATCH_SIZE = 4
 MODEL_ID = "Qwen/Qwen3-1.7B"
+SILENCE_TOKEN = "<silence>"
 
 # Set up logging to catch errors without stopping execution
 logging.basicConfig(filename="extraction_errors.log", level=logging.ERROR)
@@ -25,9 +26,17 @@ def get_token_timestamps(token_ids, word_timings, tokenizer):
 
     aligned_times = []
     word_idx = 0
-    current_word_chars_left = 0
-    current_word_start = 0.0
-    current_word_end = 0.0
+    
+    # Handle empty timings case
+    if not word_timings:
+        return [[0.0, 0.0] for _ in token_ids]
+
+    w_info = word_timings[word_idx]
+    current_word_start = w_info["start"]
+    current_word_end = w_info["end"] # Can be float or "inf"
+    
+    ref_text = w_info.get("text") or w_info.get("word") or ""
+    current_word_chars_left = len(ref_text)
 
     for tok_str in token_strs:
         clean_tok = tok_str.strip()
@@ -35,23 +44,22 @@ def get_token_timestamps(token_ids, word_timings, tokenizer):
 
         # CASE 1: Empty/Special Token -> Attach to previous
         if tok_len == 0:
-            last_end = aligned_times[-1][1] if aligned_times else 0.0
+            last_end = aligned_times[-1][1] if aligned_times else current_word_start
             aligned_times.append([last_end, last_end])
             continue
 
         # CASE 2: Load Next Word if budget exhausted
         if current_word_chars_left <= 0:
-            if word_idx < len(word_timings):
+            if word_idx + 1 < len(word_timings):
+                word_idx += 1
                 w_info = word_timings[word_idx]
                 current_word_start = w_info["start"]
                 current_word_end = w_info["end"]
-
-                # Robust key access
-                ref_text = w_info.get("word") or w_info.get("text") or clean_tok
+                
+                ref_text = w_info.get("text") or w_info.get("word") or clean_tok
                 current_word_chars_left = len(ref_text)
-                word_idx += 1
             else:
-                # No words left
+                # No words left. Propagate "inf" if that was the last endpoint.
                 last_end = aligned_times[-1][1] if aligned_times else 0.0
                 aligned_times.append([last_end, last_end])
                 continue
@@ -63,9 +71,59 @@ def get_token_timestamps(token_ids, word_timings, tokenizer):
     return aligned_times
 
 
+def preprocess_with_silence(raw_word_list):
+    """
+    Injects <silence> into ANY gap between words, no matter how small.
+    Also adds trailing silence to "inf".
+    """
+    new_word_list = []
+    cursor = 0.0
+    
+    if not raw_word_list:
+        raw_word_list = []
+
+    sorted_words = sorted(raw_word_list, key=lambda x: x['start'])
+
+    for word in sorted_words:
+        w_start = word['start']
+        w_end = word['end']
+        w_text = word.get('text') or word.get('word', "")
+
+        # STRICT CONTINUITY CHECK
+        # If the next word starts after the cursor, there IS silence.
+        # Even if the gap is 0.00001s.
+        if w_start > cursor:
+            new_word_list.append({
+                "text": SILENCE_TOKEN,
+                "start": cursor,
+                "end": w_start
+            })
+        
+        # Add the actual word
+        new_word_list.append({
+            "text": w_text,
+            "start": w_start,
+            "end": w_end
+        })
+
+        # Update cursor to the end of the current word
+        cursor = max(cursor, w_end)
+
+    # ALWAYS add trailing silence (End of Audio -> Infinity)
+    new_word_list.append({
+        "text": SILENCE_TOKEN,
+        "start": cursor,
+        "end": -1
+    })
+
+    new_text = " ".join([w["text"] for w in new_word_list])
+    
+    return new_text, new_word_list
+
+
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"🚀 Extracting LLM Feats on {device}")
+    print(f"🚀 Extracting LLM Feats (Strict Silence Mode) on {device}")
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
     tokenizer.pad_token = tokenizer.eos_token
@@ -78,85 +136,77 @@ def main():
     ds = load_dataset(ALIGN_REPO, split="dev")
 
     def extract_batch(batch):
-        # 1. Parse alignment_json to extract text and word alignments
         texts = []
-        parsed_alignments = []
+        processed_alignments = []
         
+        # 1. Preprocess Batch
         for align_json_str in batch["alignment_json"]:
             try:
                 align_data = json.loads(align_json_str)
-                texts.append(align_data.get("text", ""))
-                parsed_alignments.append(align_data.get("word", []))
+                raw_words = align_data.get("word", [])
+                
+                # Apply STRICT silence logic
+                full_text, full_words = preprocess_with_silence(raw_words)
+                
+                texts.append(full_text)
+                processed_alignments.append(full_words)
             except Exception as e:
                 logging.error(f"Error parsing alignment_json: {e}")
                 texts.append("")
-                parsed_alignments.append([])
+                processed_alignments.append([])
         
-        # 2. Forward Pass (Batch Level)
+        # 2. Tokenize & Forward
         inputs = tokenizer(
             texts, return_tensors="pt", padding=True, truncation=True
         ).to(device)
 
         with torch.no_grad():
             outputs = model(**inputs, output_hidden_states=True)
-            states = outputs.hidden_states[-2]  # Layer 27
+            states = outputs.hidden_states[-2]
 
         results_feat = []
         results_time = []
 
-        # 3. Process Individual Samples
+        # 3. Extract & Align
         for i, text in enumerate(texts):
             try:
                 valid_len = inputs.attention_mask[i].sum().item()
-
-                # Extract Feature and convert to list of lists
                 feat = states[i, :valid_len, :].cpu().numpy().astype(np.float16)
-                feat_list = feat.tolist()  # Convert numpy array to list of lists
-
-                # Extract Timestamps using parsed word alignments
-                word_alignments = parsed_alignments[i]
+                
+                word_alignments = processed_alignments[i]
                 if not word_alignments:
-                    raise ValueError("Missing word alignment data")
+                    results_feat.append(feat.tolist())
+                    results_time.append([[0.0, 0.0]] * valid_len)
+                    continue
 
                 token_ids = inputs.input_ids[i][:valid_len].cpu().tolist()
                 times = get_token_timestamps(token_ids, word_alignments, tokenizer)
 
                 # Shape Correction
                 if len(times) != valid_len:
-                    # Pad or Truncate
+                    last_valid = times[-1] if times else [0.0, 0.0]
                     new_times = [[0.0, 0.0] for _ in range(valid_len)]
                     min_len = min(len(times), valid_len)
                     if min_len > 0:
                         new_times[:min_len] = times[:min_len]
-                        # Propagate last valid timestamp to remaining tokens (safer than 0)
                         for j in range(min_len, valid_len):
-                            new_times[j] = times[min_len - 1]
+                            new_times[j] = last_valid
                     times = new_times
 
-                results_feat.append(feat_list)
+                results_feat.append(feat.tolist())
                 results_time.append(times)
 
             except Exception as e:
-                # Log error and return dummy data to keep batch size consistent
-                # This prevents the whole map() job from crashing
-                logging.error(f"Error processing sample {i} in batch: {e}")
-                print(f"⚠️ Error in sample: {e}")
-
-                # Return Zero-dummies matching the shape
-                # Feat: [valid_len, 2048], Times: [valid_len, 2]
+                logging.error(f"Error processing sample {i}: {e}")
                 v_len = inputs.attention_mask[i].sum().item()
-                results_feat.append([[0.0] * 2048 for _ in range(v_len)])
-                results_time.append([[0.0, 0.0] for _ in range(v_len)])
+                results_feat.append([[0.0]*2048]*v_len)
+                results_time.append([[0.0, 0.0]]*v_len)
 
         return {"llm_feat": results_feat, "llm_times": results_time}
 
-    # Run Map without explicit feature schema - let datasets infer from the data
     ds_llm = ds.map(extract_batch, batched=True, batch_size=BATCH_SIZE)
-
-    # Push
     ds_llm.push_to_hub(TGT_REPO)
     print("✅ LLM Features Pushed!")
-
 
 if __name__ == "__main__":
     main()

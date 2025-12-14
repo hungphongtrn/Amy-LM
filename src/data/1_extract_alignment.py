@@ -11,6 +11,58 @@ TGT_REPO = "hungphongtrn/speech-time-alignment"
 BATCH_SIZE = 512  # Adjust based on VRAM
 HF_TOKEN = os.getenv("HF_TOKEN")
 AUDIO_OUTPUT_DIR = "data/audio"
+SILENCE_TOKEN = "<silence>"
+
+
+def preprocess_with_silence(raw_word_list):
+    """
+    Injects <silence> into ANY gap between words, no matter how small.
+    Also adds trailing silence to "inf".
+    """
+    new_word_list = []
+    cursor = 0.0
+    
+    if not raw_word_list:
+        raw_word_list = []
+
+    sorted_words = sorted(raw_word_list, key=lambda x: x['start'])
+
+    for word in sorted_words:
+        w_start = word['start']
+        w_end = word['end']
+        w_text = word.get('text') or word.get('word', "")
+
+        # STRICT CONTINUITY CHECK
+        # If the next word starts after the cursor, there IS silence.
+        # Even if the gap is 0.00001s.
+        if w_start > cursor:
+            new_word_list.append({
+                "text": SILENCE_TOKEN,
+                "start": cursor,
+                "end": w_start
+            })
+        
+        # Add the actual word
+        new_word_list.append({
+            "text": w_text,
+            "start": w_start,
+            "end": w_end
+        })
+
+        # Update cursor to the end of the current word
+        cursor = max(cursor, w_end)
+
+    # ALWAYS add trailing silence (End of Audio -> Infinity)
+    new_word_list.append({
+        "text": SILENCE_TOKEN,
+        "start": cursor,
+        "end": -1
+    })
+
+    new_text = " ".join([w["text"] for w in new_word_list])
+    
+    return new_text, new_word_list
+
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -45,7 +97,7 @@ def main():
     print(f"✅ All audio files saved to {AUDIO_OUTPUT_DIR}")
     
     # 4. Second Pass: Transcribe and extract timestamps
-    print("🎤 Transcribing audio files and extracting timestamps...")
+    print("🎤 Transcribing audio files and extracting timestamps (with SILENCE_TOKEN logic)...")
     def transcribe_batch(batch):
         # Build paths to saved audio files
         audio_paths = [os.path.join(AUDIO_OUTPUT_DIR, f"{seg_id}.wav") for seg_id in batch['segment_id']]
@@ -53,17 +105,23 @@ def main():
         # Run transcription with timestamps
         outputs = model.transcribe(audio_paths, timestamps=True)
         
-        # Extract word-level timestamps and create alignment JSON
+        # Extract word-level timestamps and create alignment JSON with silence tokens
         aligned_data = []
         for output in outputs:
-            if output.timestamp.get('word') is None:
+            raw_words = output.timestamp.get('word', [])
+            # Skip items with no transcription data
+            if raw_words is None or len(raw_words) == 0:
                 continue
             
+            # Apply STRICT silence logic
+            full_text, full_words = preprocess_with_silence(raw_words)
+            
             alignment = {
-                "word": output.timestamp.get('word', []),
+                "word": full_words,  # Now includes silence tokens
                 "segment": output.timestamp.get('segment', []),
                 "char": output.timestamp.get('char', []),
-                "text": output.text
+                "text": full_text,  # Updated text with silence tokens
+                "original_text": output.text  # Keep original for reference
             }
             aligned_data.append(json.dumps(alignment))
         
