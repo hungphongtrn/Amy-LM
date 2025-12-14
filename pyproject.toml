@@ -5,16 +5,22 @@ description = "Amy LM"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "cython>=3.2.2",
     "datasets>=2.15.0",
+    "packaging>=24.2",
+    "setuptools>=80.9.0",
+    "torchcodec>=0.9.1",
+    "wheel>=0.45.1",
 ]
 
 [project.optional-dependencies]
 # Machine A: Alignment (System deps: ffmpeg, libsndfile1)
 alignment = [
-    "nemo_toolkit[asr]",
-    "nemo-forced-aligner",
+    "transformers>=4.35.0",
     "torch>=2.0.0",
     "soundfile>=0.12.0",
+    "accelerate>=0.20.0",
+    "nemo_toolkit[asr]"
 ]
 wavlm = [
     "transformers>=4.35.0",

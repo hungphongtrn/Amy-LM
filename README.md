@@ -22,7 +22,7 @@ pip install uv
 **System Dependencies**:
 
 ```bash
-sudo apt-get install ffmpeg libsndfile1
+sudo apt-get install ffmpeg libsndfile1 clang 
 ```
 
 **Python Dependencies**:
@@ -34,7 +34,7 @@ uv sync --extra alignment
 **Run**:
 
 ```bash
-python src/data/1_extract_alignment.py
+uv run src/data/1_extract_alignment.py
 ```
 
 ---
@@ -55,7 +55,7 @@ uv sync --extra wavlm
 **Run**:
 
 ```bash
-python src/data/2_extract_wavlm.py
+uv run src/data/2_extract_wavlm.py
 ```
 
 ---
@@ -76,7 +76,7 @@ uv sync --extra llm
 **Run**:
 
 ```bash
-python src/data/3_extract_llm.py
+uv run src/data/3_extract_llm.py
 ```
 
 ---
@@ -97,5 +97,5 @@ uv sync --extra upload
 **Run**:
 
 ```bash
-python src/data/push_to_hub.py
+uv run src/data/push_to_hub.py
 ```
