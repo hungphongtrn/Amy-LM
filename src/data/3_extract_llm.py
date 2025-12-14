@@ -10,7 +10,6 @@ ALIGN_REPO = "hungphongtrn/speech-time-alignment"
 TGT_REPO = "hungphongtrn/llm-features"
 BATCH_SIZE = 4
 MODEL_ID = "Qwen/Qwen3-1.7B"
-SILENCE_TOKEN = "<silence>"
 
 # Set up logging to catch errors without stopping execution
 logging.basicConfig(filename="extraction_errors.log", level=logging.ERROR)
@@ -71,59 +70,9 @@ def get_token_timestamps(token_ids, word_timings, tokenizer):
     return aligned_times
 
 
-def preprocess_with_silence(raw_word_list):
-    """
-    Injects <silence> into ANY gap between words, no matter how small.
-    Also adds trailing silence to "inf".
-    """
-    new_word_list = []
-    cursor = 0.0
-    
-    if not raw_word_list:
-        raw_word_list = []
-
-    sorted_words = sorted(raw_word_list, key=lambda x: x['start'])
-
-    for word in sorted_words:
-        w_start = word['start']
-        w_end = word['end']
-        w_text = word.get('text') or word.get('word', "")
-
-        # STRICT CONTINUITY CHECK
-        # If the next word starts after the cursor, there IS silence.
-        # Even if the gap is 0.00001s.
-        if w_start > cursor:
-            new_word_list.append({
-                "text": SILENCE_TOKEN,
-                "start": cursor,
-                "end": w_start
-            })
-        
-        # Add the actual word
-        new_word_list.append({
-            "text": w_text,
-            "start": w_start,
-            "end": w_end
-        })
-
-        # Update cursor to the end of the current word
-        cursor = max(cursor, w_end)
-
-    # ALWAYS add trailing silence (End of Audio -> Infinity)
-    new_word_list.append({
-        "text": SILENCE_TOKEN,
-        "start": cursor,
-        "end": -1
-    })
-
-    new_text = " ".join([w["text"] for w in new_word_list])
-    
-    return new_text, new_word_list
-
-
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"🚀 Extracting LLM Feats (Strict Silence Mode) on {device}")
+    print(f"🚀 Extracting LLM Features on {device}")
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
     tokenizer.pad_token = tokenizer.eos_token
@@ -137,23 +86,27 @@ def main():
 
     def extract_batch(batch):
         texts = []
-        processed_alignments = []
+        word_alignments_list = []
         
-        # 1. Preprocess Batch
+        # 1. Parse alignment data (already contains silence tokens)
         for align_json_str in batch["alignment_json"]:
             try:
                 align_data = json.loads(align_json_str)
-                raw_words = align_data.get("word", [])
+                words = align_data.get("word", [])
                 
-                # Apply STRICT silence logic
-                full_text, full_words = preprocess_with_silence(raw_words)
+                # Use the text field which already includes silence tokens
+                text = align_data.get("text", "")
                 
-                texts.append(full_text)
-                processed_alignments.append(full_words)
+                # If text is not available, reconstruct from words
+                if not text and words:
+                    text = " ".join([w.get("text") or w.get("word", "") for w in words])
+                
+                texts.append(text)
+                word_alignments_list.append(words)
             except Exception as e:
                 logging.error(f"Error parsing alignment_json: {e}")
                 texts.append("")
-                processed_alignments.append([])
+                word_alignments_list.append([])
         
         # 2. Tokenize & Forward
         inputs = tokenizer(
@@ -173,7 +126,7 @@ def main():
                 valid_len = inputs.attention_mask[i].sum().item()
                 feat = states[i, :valid_len, :].cpu().numpy().astype(np.float16)
                 
-                word_alignments = processed_alignments[i]
+                word_alignments = word_alignments_list[i]
                 if not word_alignments:
                     results_feat.append(feat.tolist())
                     results_time.append([[0.0, 0.0]] * valid_len)
