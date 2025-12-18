@@ -1,238 +1,318 @@
 """
-Prepare the data for training the compressor model.
-During training, we will use the following data:
-- Speech data; 
-- WavLM features for distillation
-- Qwen hidden states for distillation
-- Duration of each word in the speech data
+Audio Feature Alignment and Preprocessing Module.
 
-Each training sample will be:
-- Speech data: [B, 1, 24000*time_in_seconds]
-- WavLM features: [B, T1, 768]
-- Qwen hidden states: [B, T2, 2048]
-- Duration of each word: [B, T]
+This module provides functionality to synchronize and process multi-modal audio datasets
+for the "Amy" model training pipeline. It specifically handles the alignment of heterogeneous
+feature streams (raw audio, WavLM features, and LLM semantic features) into a unified
+temporal grid defined by the Mimi codec.
+
+Key Operations:
+    1.  **Audio Resampling**: Standardizes raw audio to a specific codec sample rate (e.g., 24kHz).
+    2.  **WavLM Alignment**: Down-samples dense acoustic features using adaptive average pooling
+        to match the target frame rate.
+    3.  **LLM Feature Alignment**: Projects sparse, interval-based semantic features onto the
+        continuous target time grid using an integral image (prefix sum) approach for efficient
+        temporal averaging.
+
+Constants:
+    DATASET (str): Path to the input dataset.
+    MIMI_FPS (float): Target frames per second for the alignment grid (12.5 Hz).
+    MIMI_SAMPLE_RATE (int): Target sampling rate for audio waveforms (24000 Hz).
+
+Each batch will contain:
+    - audio: (B, 1, T_samples) at 
+    - wavlm_feat: (B, T_frames, D_wavlm)
+    - llm_feat: (B, T_frames, D_llm)
 """
 
-import json
+import lightning as L
 import torch
-import torch.nn.functional as F
 import torchaudio
 import numpy as np
-import lightning as L
-from torch.utils.data import Dataset, DataLoader
-from datasets import load_dataset
+from torch.utils.data import DataLoader, random_split
+from datasets import load_from_disk
+from typing import Optional, List, Dict
 
-# Constants
-RAW_AUDIO_REPO = "speechcolab/gigaspeech"
-ALIGN_DATASET_REPO = "hungphongtrn/speech-time-alignment"
-WAVLM_FEATURES_REPO = "hungphongtrn/wavlm-features"
-LLLM_HIDDEN_STATES_REPO = "hungphongtrn/llm-hidden-states"
-
-TARGET_SAMPLE_RATE = 24000
-CODEC_FRAME_RATE = 12.5
-HOP_LENGTH = int(TARGET_SAMPLE_RATE / CODEC_FRAME_RATE)  # 1920
-
-class CompressorDataset(Dataset):
-    def __init__(self, audio_ds, align_ds, wavlm_ds, llm_ds):
-        self.audio_ds = audio_ds
-        self.align_ds = align_ds
-        self.wavlm_ds = wavlm_ds
-        self.llm_ds = llm_ds
-        
-    def __len__(self):
-        return len(self.audio_ds)
-
-    def __getitem__(self, idx):
-        # 1. Load Data Items
-        audio_item = self.audio_ds[idx]
-        align_item = self.align_ds[idx]
-        wavlm_item = self.wavlm_ds[idx]
-        llm_item = self.llm_ds[idx]
-
-        # 2. Process Audio
-        # Assuming audio_item['audio'] is a dict with 'array' and 'sampling_rate'
-        audio_array = audio_item['audio']['array']
-        sr = audio_item['audio']['sampling_rate']
-        audio_tensor = torch.tensor(audio_array, dtype=torch.float32)
-
-        # Resample if necessary
-        if sr != TARGET_SAMPLE_RATE:
-            audio_tensor = torchaudio.functional.resample(audio_tensor, sr, TARGET_SAMPLE_RATE)
-        
-        # Ensure audio is mono [1, T] or [T]
-        if audio_tensor.ndim == 1:
-            audio_tensor = audio_tensor.unsqueeze(0) # [1, T]
-
-        num_frames = int(audio_tensor.shape[-1] / HOP_LENGTH)
-        
-        # 3. Process WavLM Features
-        # shape: [T_wavlm, D] -> [1, D, T_wavlm] for interpolate
-        wavlm_feat = torch.tensor(wavlm_item['wavlm_feat'], dtype=torch.float32)
-        if wavlm_feat.ndim == 2:
-            wavlm_feat = wavlm_feat.transpose(0, 1).unsqueeze(0) # [1, D, T_wavlm]
-            
-        # Downsample to match codec frame rate
-        # We need output size equal to num_frames
-        if num_frames > 0:
-            wavlm_aligned = F.interpolate(wavlm_feat, size=num_frames, mode='linear', align_corners=False)
-            wavlm_aligned = wavlm_aligned.squeeze(0).transpose(0, 1) # [T, D]
-        else:
-             wavlm_aligned = torch.zeros((0, wavlm_feat.shape[1]))
-
-        # 4. Process Qwen Hidden States
-        # shape: [N_tokens, D]
-        # We need to align tokens to frames using timestamps
-        qwen_feat = torch.tensor(llm_item['llm_feat'], dtype=torch.float32)
-        llm_times = np.array(llm_item['llm_times']) # [N_tokens, 2] (start, end)
-        
-        qwen_aligned = torch.zeros((num_frames, qwen_feat.shape[1]), dtype=qwen_feat.dtype)
-        
-        if num_frames > 0 and len(llm_times) > 0:
-            # Create frame center timestamps
-            frame_centers = (np.arange(num_frames) * HOP_LENGTH / TARGET_SAMPLE_RATE) + (0.5 * HOP_LENGTH / TARGET_SAMPLE_RATE)
-            
-            # For each frame, find the corresponding token
-            # This can be optimized, but simple loop is clear
-            # Or use broadcasting/masks
-            
-            # Simple greedy assignment: find token where start <= t_center <= end
-            # Using numpy logic
-            # llm_times[:, 0] <= centers[None, :] & llm_times[:, 1] >= centers[None, :]
-            
-            # Iterate for safety (or vectorization if consistent)
-            for t_idx, t_center in enumerate(frame_centers):
-                # Find token index
-                matches = np.where((llm_times[:, 0] <= t_center) & (llm_times[:, 1] >= t_center))[0]
-                if len(matches) > 0:
-                    token_idx = matches[0] # Take first match
-                    qwen_aligned[t_idx] = qwen_feat[token_idx]
-                else:
-                    # Silence/No token -> Keep zero or use previous?
-                    # Zero is safer for "no semantic content"
-                    pass
-
-        # 5. Process Duration/Word Alignment (Optional based on docstring)
-        # Construct a duration tensor or similar. 
-        # Docstring says "Duration of each word: [B, T]". 
-        # I'll create a tensor indicating the word index or just 1.0/0.0 mask?
-        # Let's assume it means "Seconds per word" broadcasted to frames? 
-        # Or maybe "Word boundaries"?
-        # Given "Using duration information... to downsample...", we already used it.
-        # But it lists it as an output. 
-        # I will return a dummy or the word_id per frame.
-        
-        # Let's return the alignment_json as processed tensor (e.g. word IDs)
-        # Using alignment_json from align_item
-        word_alignment = torch.zeros(num_frames, dtype=torch.float32) # placeholder
-        
-        # If we have word timestamps, we can fill this
-        try:
-            words = json.loads(align_item['alignment_json'])
-            # words is list of {'word':..., 'start':..., 'end':...}
-            for i, word in enumerate(words):
-                # map start/end to frames
-                start_frame = int(word['start'] * CODEC_FRAME_RATE)
-                end_frame = int(word['end'] * CODEC_FRAME_RATE)
-                # Clamp
-                start_frame = max(0, min(start_frame, num_frames))
-                end_frame = max(0, min(end_frame, num_frames))
-                word_alignment[start_frame:end_frame] = word['end'] - word['start'] # Example: fill with duration
-        except Exception:
-            pass
-
-        return {
-            "audio": audio_tensor.squeeze(0), # [T]
-            "wavlm": wavlm_aligned,    # [T, 768/1024]
-            "qwen": qwen_aligned,      # [T, 2048]
-            "duration": word_alignment # [T]
-        }
-
-def collate_fn(batch):
-    # Pad all sequences to the longest in the batch
-    
-    # 1. Audio
-    audios = [b['audio'] for b in batch]
-    audio_lens = [len(a) for a in audios]
-    max_audio_len = max(audio_lens)
-    padded_audio = torch.zeros(len(batch), max_audio_len)
-    
-    # 2. WavLM
-    wavlms = [b['wavlm'] for b in batch]
-    wavlm_dim = wavlms[0].shape[1]
-    max_frame_len = max([len(w) for w in wavlms])
-    padded_wavlm = torch.zeros(len(batch), max_frame_len, wavlm_dim)
-
-    # 3. Qwen
-    qwens = [b['qwen'] for b in batch]
-    qwen_dim = qwens[0].shape[1]
-    padded_qwen = torch.zeros(len(batch), max_frame_len, qwen_dim)
-    
-    # 4. Duration
-    durations = [b['duration'] for b in batch]
-    padded_duration = torch.zeros(len(batch), max_frame_len)
-    
-    # Fill
-    for i in range(len(batch)):
-        # Audio
-        end_audio = len(audios[i])
-        padded_audio[i, :end_audio] = audios[i]
-        
-        # Frames
-        end_frame = len(wavlms[i]) # Should be same for wavlm/qwen/duration
-        padded_wavlm[i, :end_frame] = wavlms[i]
-        padded_qwen[i, :end_frame] = qwens[i]
-        padded_duration[i, :end_frame] = durations[i]
-        
-    return {
-        "audio": padded_audio,
-        "wavlm": padded_wavlm,
-        "qwen": padded_qwen,
-        "duration": padded_duration
-    }
 
 class CompressorDataLoader(L.LightningDataModule):
-    def __init__(self, data_dir: str, batch_size: int, num_workers: int):
+    """
+    PyTorch Lightning DataModule for Mimi Model training.
+
+    Features:
+    - Loads a HuggingFace dataset from disk.
+    - Splits into 80% Train / 20% Test (Validation).
+    - Uses a custom Collator to resample audio and align features on-the-fly.
+    - Handles random cropping to fixed durations for batch training.
+    """
+
+    def __init__(
+        self,
+        data_path: str,
+        batch_size: int = 8,
+        num_workers: int = 4,
+        sample_rate: int = 24000,
+        fps: float = 12.5,
+        segment_duration: float = 1.0,  # Duration in seconds for training crops
+        seed: int = 42,
+    ):
         super().__init__()
-        self.data_dir = data_dir
+        self.data_path = data_path
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.sample_rate = sample_rate
+        self.fps = fps
+        self.segment_duration = segment_duration
+        self.seed = seed
+        self.save_hyperparameters()
 
-    def setup(self, stage: str = None):
-        # Load datasets
-        if stage == "fit" or stage is None:
-            self.train_dataset = self._load_split("train")
-            self.val_dataset = self._load_split("validation")
-        elif stage == "validate":
-            self.val_dataset = self._load_split("validation")
+    def setup(self, stage: Optional[str] = None):
+        # Load dataset from disk
+        # We assume the dataset has columns: 'audio', 'wavlm_feat', 'llm_feat', 'llm_times'
+        full_dataset = load_from_disk(self.data_path)
 
-    def _load_split(self, split: str):
-        try:
-            raw_audio = load_dataset(RAW_AUDIO_REPO, split=split, trust_remote_code=True)
-            align_ds = load_dataset(ALIGN_DATASET_REPO, split=split)
-            wavlm_ds = load_dataset(WAVLM_FEATURES_REPO, split=split)
-            llm_ds = load_dataset(LLLM_HIDDEN_STATES_REPO, split=split)
-            return CompressorDataset(raw_audio, align_ds, wavlm_ds, llm_ds)
-        except Exception as e:
-            print(f"Warning: Could not load split '{split}': {e}")
-            return None
+        # Calculate split sizes
+        total_size = len(full_dataset)
+        train_size = int(0.8 * total_size)
+        val_size = total_size - train_size
+
+        # reproducible split
+        generator = torch.Generator().manual_seed(self.seed)
+        self.train_ds, self.val_ds = random_split(
+            full_dataset, [train_size, val_size], generator=generator
+        )
 
     def train_dataloader(self):
-        if self.train_dataset:
-            return DataLoader(
-                self.train_dataset, 
-                batch_size=self.batch_size, 
-                shuffle=True, 
-                num_workers=self.num_workers,
-                collate_fn=collate_fn
-            )
-        return None
+        # For training, we enable random cropping in the collator
+        collator = AudioCollator(
+            sample_rate=self.sample_rate,
+            fps=self.fps,
+            crop_duration=self.segment_duration,
+            training=True,
+        )
+        return DataLoader(
+            self.train_ds,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
+            collate_fn=collator,
+            pin_memory=True,
+        )
 
     def val_dataloader(self):
-        if self.val_dataset:
-            return DataLoader(
-                self.val_dataset, 
-                batch_size=self.batch_size, 
-                shuffle=False, 
-                num_workers=self.num_workers,
-                collate_fn=collate_fn
+        # For validation, we can either crop deterministically or return full sequences.
+        # Here we crop to ensure consistent batch shapes for metric calculation.
+        collator = AudioCollator(
+            sample_rate=self.sample_rate,
+            fps=self.fps,
+            crop_duration=self.segment_duration,
+            training=False,
+        )
+        return DataLoader(
+            self.val_ds,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            collate_fn=collator,
+            pin_memory=True,
+        )
+
+
+class AudioCollator:
+    """
+    Custom Collator that handles:
+    1. Resampling Audio to target codec sample rate.
+    2. Aligning WavLM and LLM features to the target frame rate.
+    3. Randomly cropping the signal and features to a fixed duration.
+    """
+
+    def __init__(
+        self,
+        sample_rate: int = 24000,
+        fps: float = 12.5,
+        crop_duration: float = 1.0,
+        training: bool = True,
+    ):
+        self.sample_rate = sample_rate
+        self.fps = fps
+        self.crop_duration = crop_duration
+        self.training = training
+
+        # Calculate target sizes
+        self.target_samples = int(self.sample_rate * self.crop_duration)
+        self.target_frames = int(np.ceil(self.crop_duration * self.fps))
+
+    def __call__(self, batch: List[Dict]) -> Dict[str, torch.Tensor]:
+        batch_audio = []
+        batch_wavlm = []
+        batch_llm = []
+
+        for item in batch:
+            # --- 1. Audio Processing ---
+            # Load and resample
+            src_audio = torch.tensor(item["audio"]["array"]).float()
+            src_sr = item["audio"]["sampling_rate"]
+
+            if src_sr != self.sample_rate:
+                resampler = torchaudio.transforms.Resample(src_sr, self.sample_rate)
+                audio = resampler(src_audio.unsqueeze(0)).squeeze(0)
+            else:
+                audio = src_audio
+
+            # Determine crop offsets
+            audio_len = audio.shape[0]
+            if audio_len > self.target_samples:
+                if self.training:
+                    start_sample = torch.randint(
+                        0, audio_len - self.target_samples, (1,)
+                    ).item()
+                else:
+                    start_sample = 0  # Deterministic for validation
+            else:
+                start_sample = 0
+
+            # --- 2. Align Features (Simplified Single-Item Logic) ---
+            # We align the *full* sequence first, then crop.
+            # (Optimization: You could align only the crop window, but handling LLM boundaries is trickier)
+
+            # A. WavLM Alignment
+            wavlm_raw = (
+                torch.tensor(item["wavlm_feat"]).float().transpose(0, 1).unsqueeze(0)
+            )  # (1, D, T_orig)
+
+            # Calculate how many frames correspond to the CURRENT audio length
+            # Note: We use the actual duration of the resampled audio to stay in sync
+            duration = audio.shape[0] / self.sample_rate
+            total_frames = int(np.ceil(duration * self.fps))
+
+            wavlm_aligned = torch.nn.functional.adaptive_avg_pool1d(
+                wavlm_raw, total_frames
             )
+            wavlm_aligned = wavlm_aligned.squeeze(0).transpose(0, 1)  # (T_frames, D)
+
+            # B. LLM Alignment
+            # (Reusing the robust logic from process_batch, adapted for single item)
+            llm_feat = np.array(item["llm_feat"])
+            llm_times = np.array(item["llm_times"])
+
+            # Grid for this specific item
+            frame_indices = np.arange(total_frames)
+            grid_starts = frame_indices / self.fps
+            grid_ends = (frame_indices + 1) / self.fps
+
+            # Fix LLM times (-1 means end of audio)
+            t_starts = llm_times[:, 0]
+            t_ends = llm_times[:, 1].copy()
+            t_ends[t_ends == -1] = duration
+
+            # Align
+            idx_closest_start = np.searchsorted(t_starts, grid_starts, side="right") - 1
+            idx_closest_start = np.clip(idx_closest_start, 0, len(t_starts) - 1)
+            val_closest_start = t_starts[idx_closest_start]
+            final_idx_starts = np.searchsorted(t_starts, val_closest_start, side="left")
+
+            idx_closest_end = np.searchsorted(t_ends, grid_ends, side="left")
+            idx_closest_end = np.clip(idx_closest_end, 0, len(t_ends) - 1)
+            val_closest_end = t_ends[idx_closest_end]
+            final_idx_ends = np.searchsorted(t_ends, val_closest_end, side="right") - 1
+
+            # Prefix sum
+            feat_cumsum = np.vstack(
+                [np.zeros((1, llm_feat.shape[1])), np.cumsum(llm_feat, axis=0)]
+            )
+            sums = feat_cumsum[final_idx_ends + 1] - feat_cumsum[final_idx_starts]
+            counts = (final_idx_ends - final_idx_starts + 1).reshape(-1, 1)
+            counts = np.maximum(counts, 1)
+            llm_aligned = torch.tensor((sums / counts).astype(np.float32))
+
+            # --- 3. Cropping & Padding ---
+            # Calculate frame start based on sample start
+            start_frame = int(np.floor((start_sample / self.sample_rate) * self.fps))
+
+            # Crop Audio
+            audio_crop = audio[start_sample : start_sample + self.target_samples]
+            # Pad Audio if needed
+            if audio_crop.shape[0] < self.target_samples:
+                pad_amt = self.target_samples - audio_crop.shape[0]
+                audio_crop = torch.nn.functional.pad(audio_crop, (0, pad_amt))
+
+            # Crop Features
+            wavlm_crop = wavlm_aligned[start_frame : start_frame + self.target_frames]
+            llm_crop = llm_aligned[start_frame : start_frame + self.target_frames]
+
+            # Pad Features if needed
+            if wavlm_crop.shape[0] < self.target_frames:
+                pad_amt = self.target_frames - wavlm_crop.shape[0]
+                wavlm_crop = torch.nn.functional.pad(wavlm_crop, (0, 0, 0, pad_amt))
+            if llm_crop.shape[0] < self.target_frames:
+                pad_amt = self.target_frames - llm_crop.shape[0]
+                llm_crop = torch.nn.functional.pad(llm_crop, (0, 0, 0, pad_amt))
+
+            batch_audio.append(audio_crop)
+            batch_wavlm.append(wavlm_crop)
+            batch_llm.append(llm_crop)
+
+        # Stack into batches
+        return {
+            "audio": torch.stack(batch_audio).unsqueeze(1),  # (B, 1, T_samples)
+            "wavlm_feat": torch.stack(batch_wavlm),  # (B, T_frames, D_wavlm)
+            "llm_feat": torch.stack(batch_llm),  # (B, T_frames, D_llm)
+        }
+
+
+if __name__ == "__main__":
+    # Test configuration
+    TEST_DATA_PATH = "data/Amy-LM-Dataset"  # Ensure this path exists or change it
+    BATCH_SIZE = 2
+    DURATION = 1.0  # seconds
+
+    print(f"--- Testing CompressorDataLoader with path: {TEST_DATA_PATH} ---")
+
+    try:
+        # 1. Initialize Module
+        data_module = CompressorDataLoader(
+            data_path=TEST_DATA_PATH,
+            batch_size=BATCH_SIZE,
+            segment_duration=DURATION,
+            num_workers=0,  # Set to 0 for easier debugging
+        )
+
+        # 2. Setup (Load & Split)
+        print("Setting up data module...")
+        data_module.setup()
+        print(f"Train set size: {len(data_module.train_ds)}")
+        print(f"Val set size: {len(data_module.val_ds)}")
+
+        # 3. Fetch a single batch
+        print("\nFetching one batch from train dataloader...")
+        loader = data_module.train_dataloader()
+        batch = next(iter(loader))
+
+        # 4. Inspect Shapes
+        print("\n--- Batch Inspection ---")
+        audio = batch["audio"]
+        wavlm = batch["wavlm_feat"]
+        llm = batch["llm_feat"]
+
+        print(f"Audio Shape  [B, C, T_samples]: {audio.shape}")
+        print(f"WavLM Shape  [B, T_frames, D] : {wavlm.shape}")
+        print(f"LLM Shape    [B, T_frames, D] : {llm.shape}")
+
+        # 5. Validation Checks
+        expected_samples = int(data_module.sample_rate * DURATION)
+        expected_frames = int(np.ceil(DURATION * data_module.fps))
+
+        assert audio.shape[-1] == expected_samples, (
+            f"Audio length mismatch! Got {audio.shape[-1]}, expected {expected_samples}"
+        )
+        assert wavlm.shape[1] == expected_frames, (
+            f"Feature frame count mismatch! Got {wavlm.shape[1]}, expected {expected_frames}"
+        )
+        assert wavlm.shape[1] == llm.shape[1], (
+            "WavLM and LLM features are not aligned temporally!"
+        )
+
+        print("\n✅ Test Passed: Shapes align with target duration and sample rate.")
+
+    except Exception as e:
+        print(f"\n❌ Test Failed: {e}")
+        # Hint: check if the dataset path is correct if this fails immediately.
