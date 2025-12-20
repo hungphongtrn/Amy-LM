@@ -620,7 +620,7 @@ def get_mimi_with_prosody_from_original_mimi_weights(
 
     if _is_safetensors(filename):
         state = load_file(filename, device=str(device))
-        missing_keys, unexpected_keys = model.load_state_dict(state)
+        missing_keys, unexpected_keys = model.load_state_dict(state, strict=False)
     elif _is_lightning_checkpoint(filename):
         pkg = torch.load(filename, "cpu")
         state_dict = pkg["state_dict"]

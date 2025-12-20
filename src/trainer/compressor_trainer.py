@@ -2,7 +2,7 @@
 Trainer for the compressor model.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 
 import lightning as L
 import torch
@@ -52,7 +52,7 @@ class CompressorTrainer(L.LightningModule):
         super().__init__()
         self.config = config
         self.automatic_optimization = False  # Manual optimization for GAN
-        self.save_hyperparameters(config)
+        self.save_hyperparameters(asdict(config))
 
         # 1. Generator (Mimi)
         self.model = get_mimi_with_prosody_from_original_mimi_weights(
