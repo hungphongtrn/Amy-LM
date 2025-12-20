@@ -27,22 +27,22 @@ from trainer.adversarial_losses import (
 class CompressorTrainerConfig:
     orignal_filename: str
     mimi_config: MimiConfig = field(default_factory=lambda: DEFAULT_MIMI_CONFIG)
-    device: str = "cuda"
-    num_codebooks: int = 8
+    device: str
+    num_codebooks: int
 
     # Dimensions for distillation
-    wavlm_dim: int = 1024
-    llm_dim: int = 1024
+    wavlm_dim: int
+    llm_dim: int
 
     # Training flags
-    adversarial_only: bool = False
+    adversarial_only: bool
 
     # Loss Weights
-    alpha_adv: float = 4.0
-    alpha_feat: float = 4.0
-    alpha_msspec: float = 2.0
-    alpha_wavlm: float = 1.0
-    alpha_llm: float = 1.0
+    alpha_adv: float
+    alpha_feat: float
+    alpha_msspec: float
+    alpha_wavlm: float
+    alpha_llm: float
 
 
 class CompressorTrainer(L.LightningModule):

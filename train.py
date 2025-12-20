@@ -2,7 +2,7 @@ import os
 import sys
 import torch
 import lightning as L
-from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
+from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 from lightning.pytorch.loggers import WandbLogger
 
 # Add src to python path to allow imports within src modules to work
@@ -76,7 +76,7 @@ def train():
     )
 
     # Logger
-    logger = WandbLogger(project="amy_compressor")
+    logger = WandbLogger(project="amy_compressor", config=trainer_config)
     logger.watch(model, log="gradients", log_freq=100, log_graph=True)
 
     trainer = L.Trainer(
