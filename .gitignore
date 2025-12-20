@@ -5,3 +5,7 @@ data/
 *.log
 
 __pycache__/
+.ruff_cache/
+
+wandb/
+checkpoints/

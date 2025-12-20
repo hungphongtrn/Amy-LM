@@ -601,6 +601,7 @@ def get_mimi_with_prosody_from_original_mimi_weights(
     model.eval()
 
     # If filename exist locally, load the weights from the local file.
+    filename = orignal_filename
     if not Path(orignal_filename).exists():
         repo_id = orignal_filename
         # Download the weights from the HuggingFace resitory:

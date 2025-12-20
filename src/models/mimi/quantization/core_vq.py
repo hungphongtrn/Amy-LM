@@ -330,7 +330,9 @@ class EuclideanCodebook(nn.Module):
                 metrics['rvq_entropy'] = _compute_entropy(self.cluster_usage) / math.log(self.codebook_size)
 
             embedding_sum = torch.zeros_like(self.embedding_sum)
-            embedding_sum.scatter_add_(0, repeat(flat_codes, "n -> n d", d=self.dim), x)
+            # Cast x to match embedding_sum dtype for mixed precision training
+            x_cast = x.to(dtype=embedding_sum.dtype)
+            embedding_sum.scatter_add_(0, repeat(flat_codes, "n -> n d", d=self.dim), x_cast)
             _ema_inplace(self.embedding_sum, embedding_sum, self.decay)
             self.register_buffer('_embedding', None)
 

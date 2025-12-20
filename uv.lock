@@ -178,6 +178,7 @@ dependencies = [
     { name = "torchaudio" },
     { name = "torchcodec" },
     { name = "transformers" },
+    { name = "wandb" },
     { name = "wheel" },
 ]
 
@@ -235,6 +236,7 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'alignment'", specifier = ">=4.35.0" },
     { name = "transformers", marker = "extra == 'llm'", specifier = ">=4.35.0" },
     { name = "transformers", marker = "extra == 'wavlm'", specifier = ">=4.35.0" },
+    { name = "wandb", specifier = ">=0.23.1" },
     { name = "wheel", specifier = ">=0.45.1" },
 ]
 provides-extras = ["alignment", "wavlm", "llm", "upload"]

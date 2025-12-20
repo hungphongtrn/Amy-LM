@@ -20,10 +20,12 @@ Constants:
     MIMI_SAMPLE_RATE (int): Target sampling rate for audio waveforms (24000 Hz).
 
 Each batch will contain:
-    - audio: (B, 1, T_samples) at 
+    - audio: (B, 1, T_samples) at
     - wavlm_feat: (B, T_frames, D_wavlm)
     - llm_feat: (B, T_frames, D_llm)
 """
+
+from dataclasses import dataclass
 
 import lightning as L
 import torch
@@ -32,6 +34,13 @@ import numpy as np
 from torch.utils.data import DataLoader, random_split
 from datasets import load_from_disk
 from typing import Optional, List, Dict
+
+
+@dataclass
+class BatchInputData:
+    audio: torch.Tensor
+    wavlm_feat: torch.Tensor
+    llm_feat: torch.Tensor
 
 
 class CompressorDataLoader(L.LightningDataModule):
@@ -141,7 +150,7 @@ class AudioCollator:
         self.target_samples = int(self.sample_rate * self.crop_duration)
         self.target_frames = int(np.ceil(self.crop_duration * self.fps))
 
-    def __call__(self, batch: List[Dict]) -> Dict[str, torch.Tensor]:
+    def __call__(self, batch: List[Dict]) -> BatchInputData:
         batch_audio = []
         batch_wavlm = []
         batch_llm = []
@@ -252,11 +261,11 @@ class AudioCollator:
             batch_llm.append(llm_crop)
 
         # Stack into batches
-        return {
-            "audio": torch.stack(batch_audio).unsqueeze(1),  # (B, 1, T_samples)
-            "wavlm_feat": torch.stack(batch_wavlm),  # (B, T_frames, D_wavlm)
-            "llm_feat": torch.stack(batch_llm),  # (B, T_frames, D_llm)
-        }
+        return BatchInputData(
+            audio=torch.stack(batch_audio).unsqueeze(1),  # (B, 1, T_samples)
+            wavlm_feat=torch.stack(batch_wavlm),  # (B, T_frames, D_wavlm)
+            llm_feat=torch.stack(batch_llm),  # (B, T_frames, D_llm)
+        )
 
 
 if __name__ == "__main__":
@@ -289,9 +298,9 @@ if __name__ == "__main__":
 
         # 4. Inspect Shapes
         print("\n--- Batch Inspection ---")
-        audio = batch["audio"]
-        wavlm = batch["wavlm_feat"]
-        llm = batch["llm_feat"]
+        audio = batch.audio
+        wavlm = batch.wavlm_feat
+        llm = batch.llm_feat
 
         print(f"Audio Shape  [B, C, T_samples]: {audio.shape}")
         print(f"WavLM Shape  [B, T_frames, D] : {wavlm.shape}")

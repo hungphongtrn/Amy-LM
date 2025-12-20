@@ -18,12 +18,13 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.nn.utils import weight_norm
+from einops import rearrange
 
 from .streaming import StreamingModule, State
 
 
 CONV_NORMALIZATIONS = frozenset(["none", "weight_norm"])
-M = tp.TypeVar('M', bound=nn.Module)
+M = tp.TypeVar("M", bound=nn.Module)
 
 
 class TransposedLayerNorm(nn.Module):
@@ -110,6 +111,66 @@ def unpad1d(x: torch.Tensor, paddings: tp.Tuple[int, int]):
     return x[..., padding_left:end]
 
 
+class ConvLayerNorm(nn.LayerNorm):
+    """
+    Convolution-friendly LayerNorm that moves channels to last dimensions
+    before running the normalization and moves them back to original position right after.
+    """
+
+    def __init__(
+        self, normalized_shape: tp.Union[int, tp.List[int], torch.Size], **kwargs
+    ):
+        super().__init__(normalized_shape, **kwargs)
+
+    def forward(self, x):
+        x = rearrange(x, "b ... t -> b t ...")
+        x = super().forward(x)
+        x = rearrange(x, "b t ... -> b ... t")
+        return
+
+
+def get_norm_module(
+    module: nn.Module, causal: bool = False, norm: str = "none", **norm_kwargs
+) -> nn.Module:
+    """Return the proper normalization module. If causal is True, this will ensure the returned
+    module is causal, or return an error if the normalization doesn't support causal evaluation.
+    """
+    assert norm in CONV_NORMALIZATIONS
+    if norm == "layer_norm":
+        assert isinstance(module, nn.modules.conv._ConvNd)
+        return ConvLayerNorm(module.out_channels, **norm_kwargs)
+    elif norm == "time_group_norm":
+        if causal:
+            raise ValueError("GroupNorm doesn't support causal evaluation.")
+        assert isinstance(module, nn.modules.conv._ConvNd)
+        return nn.GroupNorm(1, module.out_channels, **norm_kwargs)
+    else:
+        return nn.Identity()
+
+
+class NormConv2d(nn.Module):
+    """Wrapper around Conv2d and normalization applied to this conv
+    to provide a uniform interface across normalization approaches.
+    """
+
+    def __init__(
+        self,
+        *args,
+        norm: str = "none",
+        norm_kwargs: tp.Dict[str, tp.Any] = {},
+        **kwargs,
+    ):
+        super().__init__()
+        self.conv = apply_parametrization_norm(nn.Conv2d(*args, **kwargs), norm)
+        self.norm = get_norm_module(self.conv, causal=False, norm=norm, **norm_kwargs)
+        self.norm_type = norm
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.norm(x)
+        return x
+
+
 class NormConv1d(nn.Module):
     """Wrapper around Conv1d and normalization applied to this conv
     to provide a uniform interface across normalization approaches.
@@ -124,9 +185,7 @@ class NormConv1d(nn.Module):
         **kwargs,
     ):
         super().__init__()
-        self.conv = apply_parametrization_norm(
-            nn.Conv1d(*args, **kwargs), norm
-        )
+        self.conv = apply_parametrization_norm(nn.Conv1d(*args, **kwargs), norm)
         self.norm_type = norm
 
     def forward(self, x):
@@ -165,7 +224,9 @@ class _StreamingConv1dState(State):
 
     def reset(self, reset_mask: torch.Tensor):
         super().reset(reset_mask)
-        self.previous[:] = torch.where(reset_mask.view(-1, 1, 1), torch.zeros_like(self.previous), self.previous)
+        self.previous[:] = torch.where(
+            reset_mask.view(-1, 1, 1), torch.zeros_like(self.previous), self.previous
+        )
         self.first[:] = torch.where(reset_mask, torch.ones_like(self.first), self.first)
 
 
@@ -189,7 +250,7 @@ class StreamingConv1d(StreamingModule[_StreamingConv1dState]):
         pad_mode: str = "constant",
     ):
         super().__init__()
-        assert pad_mode in ['constant', 'replicate'], pad_mode
+        assert pad_mode in ["constant", "replicate"], pad_mode
         self.pad_mode = pad_mode
         assert causal
         # warn user on unusual setup between dilation and stride
@@ -237,8 +298,13 @@ class StreamingConv1d(StreamingModule[_StreamingConv1dState]):
         param = next(iter(self.parameters()))
         dtype = param.dtype
         device = param.device
-        previous = torch.zeros(batch_size, self.conv.conv.in_channels, kernel - stride,
-                               dtype=dtype, device=device)
+        previous = torch.zeros(
+            batch_size,
+            self.conv.conv.in_channels,
+            kernel - stride,
+            dtype=dtype,
+            device=device,
+        )
         first = torch.ones(batch_size, device=device, dtype=torch.bool)
         return _StreamingConv1dState(batch_size, device, previous, first)
 
@@ -250,22 +316,22 @@ class StreamingConv1d(StreamingModule[_StreamingConv1dState]):
         if state is None:
             state = self._init_streaming_state(B)
         TP = state.previous.shape[-1]
-        if TP and self.pad_mode == 'replicate':
+        if TP and self.pad_mode == "replicate":
             assert T >= TP, "Not enough content to pad streaming."
             init = x[..., :1]
             state.previous[:] = torch.where(
                 state.first.view(-1, 1, 1) & state.exec_mask.view(-1, 1, 1),
                 init,
-                state.previous)
+                state.previous,
+            )
         if TP:
             x = torch.cat([state.previous, x], dim=-1)
         y = self.conv(x)
         if TP:
             state.previous[:] = torch.where(
-                state.exec_mask.view(-1, 1, 1),
-                x[..., -TP:],
-                state.previous)
-            if self.pad_mode == 'replicate':
+                state.exec_mask.view(-1, 1, 1), x[..., -TP:], state.previous
+            )
+            if self.pad_mode == "replicate":
                 state.first = torch.where(
                     state.exec_mask,
                     torch.zeros_like(state.first),
@@ -281,9 +347,8 @@ class _StreamingConvTr1dState(State):
     def reset(self, reset_mask: torch.Tensor):
         super().reset(reset_mask)
         self.partial[:] = torch.where(
-            reset_mask.view(-1, 1, 1),
-            torch.zeros_like(self.partial),
-            self.partial)
+            reset_mask.view(-1, 1, 1), torch.zeros_like(self.partial), self.partial
+        )
 
 
 class StreamingConvTranspose1d(StreamingModule[_StreamingConvTr1dState]):
@@ -305,7 +370,7 @@ class StreamingConvTranspose1d(StreamingModule[_StreamingConvTr1dState]):
         norm_kwargs: tp.Dict[str, tp.Any] = {},
     ):
         super().__init__()
-        assert trim_right_ratio == 1.
+        assert trim_right_ratio == 1.0
         assert causal
         self.convtr = NormConvTranspose1d(
             in_channels,
@@ -333,8 +398,13 @@ class StreamingConvTranspose1d(StreamingModule[_StreamingConvTr1dState]):
         device = param.device
         K = self._kernel_size
         S = self._stride
-        partial = torch.zeros(batch_size, self.convtr.convtr.out_channels, K - S,
-                              device=device, dtype=dtype)
+        partial = torch.zeros(
+            batch_size,
+            self.convtr.convtr.out_channels,
+            K - S,
+            device=device,
+            dtype=dtype,
+        )
         return _StreamingConvTr1dState(batch_size, device, partial)
 
     def forward(self, x):
@@ -355,9 +425,8 @@ class StreamingConvTranspose1d(StreamingModule[_StreamingConvTr1dState]):
                 if bias is not None:
                     for_partial -= bias[:, None]
                 state.partial[:] = torch.where(
-                    state.exec_mask.view(-1, 1, 1),
-                    for_partial,
-                    state.partial)
+                    state.exec_mask.view(-1, 1, 1), for_partial, state.partial
+                )
                 y = y[..., :-PT]
         return y
 
@@ -384,7 +453,9 @@ def test():
         if stride > kernel:
             continue
         conv = StreamingConv1d(chin, chout, kernel, stride, causal=True).to(device)
-        convtr = StreamingConvTranspose1d(chout, chin, kernel, stride, causal=True).to(device)
+        convtr = StreamingConvTranspose1d(chout, chin, kernel, stride, causal=True).to(
+            device
+        )
 
         for frames in [1, 4, 8, 32, 54, 65, 128]:
             print(f"ksize {kernel} strides {stride} frames {frames}")
