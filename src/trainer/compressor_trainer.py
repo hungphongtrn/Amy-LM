@@ -2,7 +2,7 @@
 Trainer for the compressor model.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 
 import lightning as L
 import torch
@@ -27,7 +27,6 @@ from trainer.adversarial_losses import (
 @dataclass
 class CompressorTrainerConfig:
     orignal_filename: str
-    mimi_config: MimiConfig = field(default_factory=lambda: DEFAULT_MIMI_CONFIG)
     device: str
     num_codebooks: int
 
@@ -45,13 +44,15 @@ class CompressorTrainerConfig:
     alpha_wavlm: float
     alpha_llm: float
 
+    mimi_config: MimiConfig = field(default_factory=lambda: DEFAULT_MIMI_CONFIG)
+
 
 class CompressorTrainer(L.LightningModule):
     def __init__(self, config: CompressorTrainerConfig):
         super().__init__()
         self.config = config
         self.automatic_optimization = False  # Manual optimization for GAN
-        self.save_hyperparameters(config)
+        self.save_hyperparameters(asdict(config))
 
         # 1. Generator (Mimi)
         self.model = get_mimi_with_prosody_from_original_mimi_weights(
@@ -61,6 +62,12 @@ class CompressorTrainer(L.LightningModule):
             config.num_codebooks,
         )
         self.model.train()
+
+        for param in self.model.encoder.parameters():
+            param.requires_grad = False
+        if self.model.encoder_transformer is not None:
+            for param in self.model.encoder_transformer.parameters():
+                param.requires_grad = False
 
         self.frame_rate = self.config.mimi_config.frame_rate
 

@@ -47,10 +47,10 @@ def train():
         num_codebooks=9,
         wavlm_dim=1024,
         llm_dim=2048,
-        adversarial_only=True,  # Set to True for adversarial fine-tuning phase only
-        alpha_adv=4.0,
+        adversarial_only=False,  # Set to False for adaptation/warmup phase
+        alpha_adv=1.0,           # Lower adversarial weight for stability
         alpha_feat=4.0,
-        alpha_msspec=2.0,
+        alpha_msspec=15.0,       # High reconstruction weight to force adaptation
         alpha_wavlm=1.0,
         alpha_llm=1.0,
     )
@@ -73,10 +73,10 @@ def train():
     # Checkpoint callback
     checkpoint_callback = ModelCheckpoint(
         dirpath="checkpoints/compressor",
-        filename="amy-compressor-{epoch:02d}-{val_loss:.2f}"
+        filename="amy-compressor-{epoch:02d}"
         + datetime.now().strftime("%d_%m_%Y_%H_%M"),
         save_top_k=3,
-        monitor="train/loss_g",  # Note: Validation metrics might be better if available, but let's stick to G loss for now or add validation logic
+        monitor="train/msspec",  # Monitor reconstruction loss for Stage 1
         mode="min",
         every_n_epochs=1,
     )
