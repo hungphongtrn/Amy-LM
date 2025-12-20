@@ -330,7 +330,7 @@ class SplitResidualVectorQuantizer(BaseQuantizer):
         return self.rvq_first.cardinality
 
 
-class SplitResidualVectorQuantizerWithProsody(BaseQuantizer):
+class SplitResidualVectorQuantizerWithResidualProsody(BaseQuantizer):
     """Residual Vector Quantizer with separate projections for semantic, prosody, and acoustic parts.
 
     Args:
@@ -360,20 +360,9 @@ class SplitResidualVectorQuantizerWithProsody(BaseQuantizer):
 
         q_dropout = kwargs.pop("q_dropout", False)
 
-        # Semantic: No dropout, offset 0
+        # Semantic + Prosody: No dropout, offset 0
         self.rvq_first = ResidualVectorQuantizer(
-            n_q=n_q_semantic, force_projection=True, q_dropout=False, **kwargs
-        )
-
-        # Prosody: No dropout, offset = n_q_semantic
-        # We assume prosody is part of the 'base' representation alongside semantic,
-        # so we disable dropout here as well.
-        self.rvq_prosody = ResidualVectorQuantizer(
-            n_q=n_q_prosody,
-            codebook_offset=n_q_semantic,
-            force_projection=True,
-            q_dropout=False,
-            **kwargs,
+            n_q=n_q_semantic + n_q_prosody, force_projection=True, q_dropout=False, **kwargs
         )
 
         # Acoustic: Has dropout, offset = n_q_semantic + n_q_prosody
@@ -406,15 +395,11 @@ class SplitResidualVectorQuantizerWithProsody(BaseQuantizer):
         return final_val
 
     def forward(self, x: torch.Tensor, frame_rate: int):
-        # 1. Semantic
-        semantic_result = self.rvq_first(x, frame_rate)
-        n_q_sem_active = semantic_result.codes.shape[1]
+        # 1. Semantic + Prosody
+        sem_pros_result = self.rvq_first(x, frame_rate)
+        n_q_sem_pros_active = sem_pros_result.codes.shape[1]
 
-        # 2. Prosody
-        prosody_result = self.rvq_prosody(x, frame_rate)
-        n_q_pros_active = prosody_result.codes.shape[1]
-
-        # 3. Acoustic (Optional)
+        # 2. Acoustic (Optional)
         if self.rvq_rest is not None:
             acoustic_result = self.rvq_rest(x, frame_rate)
             n_q_ac_active = acoustic_result.codes.shape[1]
@@ -423,27 +408,26 @@ class SplitResidualVectorQuantizerWithProsody(BaseQuantizer):
             n_q_ac_active = 0
 
         # Combine Embeddings (Vector Sum)
-        # "Vector sum of semantic + prosody" (+ acoustic)
-        full_quantized_emb = semantic_result.x + prosody_result.x
+        full_quantized_emb = sem_pros_result.x
         if acoustic_result is not None:
             full_quantized_emb = full_quantized_emb + acoustic_result.x
 
         # Combine Codes (Concatenate)
-        codes_list = [semantic_result.codes, prosody_result.codes]
+        full_quantized_codes = sem_pros_result.codes
         if acoustic_result is not None:
-            codes_list.append(acoustic_result.codes)
-        full_quantized_codes = torch.cat(codes_list, dim=1)
+            full_quantized_codes = torch.cat(
+                [full_quantized_codes, acoustic_result.codes], dim=1
+            )
 
         # Combine Bandwidth (Sum)
-        full_bw = semantic_result.bandwidth + prosody_result.bandwidth
+        full_bw = sem_pros_result.bandwidth
         if acoustic_result is not None:
             full_bw = full_bw + acoustic_result.bandwidth
 
         # Combine Penalty (Weighted Average)
         # Collect components for renormalization
         penalty_components = [
-            (semantic_result.penalty, n_q_sem_active),
-            (prosody_result.penalty, n_q_pros_active),
+            (sem_pros_result.penalty, n_q_sem_pros_active),
         ]
         if acoustic_result is not None:
             penalty_components.append((acoustic_result.penalty, n_q_ac_active))
@@ -454,18 +438,14 @@ class SplitResidualVectorQuantizerWithProsody(BaseQuantizer):
         full_quantized_metrics = {}
 
         # We need the union of all keys in metrics
-        all_keys = set(semantic_result.metrics.keys()).union(
-            prosody_result.metrics.keys()
-        )
+        all_keys = set(sem_pros_result.metrics.keys())
         if acoustic_result is not None:
             all_keys = all_keys.union(acoustic_result.metrics.keys())
 
         for key in all_keys:
             metric_components = []
-            if key in semantic_result.metrics:
-                metric_components.append((semantic_result.metrics[key], n_q_sem_active))
-            if key in prosody_result.metrics:
-                metric_components.append((prosody_result.metrics[key], n_q_pros_active))
+            if key in sem_pros_result.metrics:
+                metric_components.append((sem_pros_result.metrics[key], n_q_sem_pros_active))
             if acoustic_result is not None and key in acoustic_result.metrics:
                 metric_components.append((acoustic_result.metrics[key], n_q_ac_active))
 
@@ -486,9 +466,6 @@ class SplitResidualVectorQuantizerWithProsody(BaseQuantizer):
         """Encode a given input tensor with the specified frame rate."""
         codes = self.rvq_first.encode(x)
 
-        prosody_codes = self.rvq_prosody.encode(x)
-        codes = torch.cat([codes, prosody_codes], dim=1)
-
         if self.rvq_rest is not None:
             acoustic_codes = self.rvq_rest.encode(x)
             codes = torch.cat([codes, acoustic_codes], dim=1)
@@ -498,16 +475,10 @@ class SplitResidualVectorQuantizerWithProsody(BaseQuantizer):
     def decode(self, codes: torch.Tensor) -> torch.Tensor:
         """Decode the given codes to the quantized representation."""
         # Boundaries
-        sem_end = self.n_q_semantic
         pros_end = self.n_q_semantic + self.n_q_prosody
 
-        # Decode Semantic
-        quantized = self.rvq_first.decode(codes[:, :sem_end])
-
-        # Decode Prosody and Add
-        # Check if codes actually contain prosody indices (robustness)
-        if codes.shape[1] > sem_end:
-            quantized += self.rvq_prosody.decode(codes[:, sem_end:pros_end])
+        # Decode Semantic + Prosody
+        quantized = self.rvq_first.decode(codes[:, :pros_end])
 
         # Decode Acoustic and Add
         if self.rvq_rest is not None and codes.shape[1] > pros_end:
@@ -517,21 +488,21 @@ class SplitResidualVectorQuantizerWithProsody(BaseQuantizer):
 
     @property
     def total_codebooks(self):
-        count = self.rvq_first.max_n_q + self.rvq_prosody.max_n_q
+        count = self.rvq_first.max_n_q
         if self.rvq_rest is not None:
             count += self.rvq_rest.max_n_q
         return count
 
     @property
     def num_codebooks(self):
-        count = self.rvq_first.num_codebooks + self.rvq_prosody.num_codebooks
+        count = self.rvq_first.num_codebooks
         if self.rvq_rest is not None:
             count += self.rvq_rest.num_codebooks
         return count
 
     @property
     def n_q(self):
-        count = self.rvq_first.n_q + self.rvq_prosody.n_q
+        count = self.rvq_first.n_q
         if self.rvq_rest is not None:
             count += self.rvq_rest.n_q
         return count
@@ -548,7 +519,10 @@ class SplitResidualVectorQuantizerWithProsody(BaseQuantizer):
     @property
     def prosody_quantizer(self) -> ResidualVectorQuantizer:
         """Returns the quantizer for the second level (prosody)."""
-        return self.rvq_prosody
+        # Prosody is now part of rvq_first, but we return rvq_first to allow
+        # access to its decode method etc, though users should be careful with indices.
+        # Alternatively, we could return None or raise deprecation warning.
+        return self.rvq_first
 
     @property
     def acoustic_quantizer(self) -> ResidualVectorQuantizer:

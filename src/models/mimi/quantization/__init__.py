@@ -13,6 +13,6 @@
 from .vq import (
     ResidualVectorQuantizer,
     SplitResidualVectorQuantizer,
-    SplitResidualVectorQuantizerWithProsody,
+    SplitResidualVectorQuantizerWithResidualProsody,
 )
 from .base import BaseQuantizer, DummyQuantizer, QuantizedResult

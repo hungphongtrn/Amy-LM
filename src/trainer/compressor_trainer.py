@@ -152,10 +152,8 @@ class CompressorTrainer(L.LightningModule):
         # We need to access the specific quantizer structure: SplitResidualVectorQuantizerWithProsody
         quantizer = self.model.quantizer
 
-        # Semantic
-        sem_res = quantizer.rvq_first(emb, self.frame_rate)
-        # Prosody
-        pros_res = quantizer.rvq_prosody(emb, self.frame_rate)
+        # Semantic + Prosody
+        sem_pros_res = quantizer.rvq_first(emb, self.frame_rate)
         # Acoustic (Rest)
         if quantizer.rvq_rest is not None:
             ac_res = quantizer.rvq_rest(emb, self.frame_rate)
@@ -163,7 +161,7 @@ class CompressorTrainer(L.LightningModule):
             ac_res = None
 
         # Reconstruct Quantized Latent (Sum)
-        emb_quant = sem_res.x + pros_res.x
+        emb_quant = sem_pros_res.x
         if ac_res is not None:
             emb_quant = emb_quant + ac_res.x
 
@@ -196,7 +194,11 @@ class CompressorTrainer(L.LightningModule):
 
         # 1. LLM Distillation -> Semantic Codebook
         # We want the semantic codebook to capture text/meaning, so we distill LLM features into it.
-        sem_latent = sem_res.x.transpose(1, 2)  # (B, T, Dim)
+        # Extract semantic part from the combined semantic+prosody result
+        sem_codes = sem_pros_res.codes[:, :quantizer.n_q_semantic]
+        sem_latent_rec = quantizer.rvq_first.decode(sem_codes) # (B, Dim, T)
+        sem_latent = sem_latent_rec.transpose(1, 2)  # (B, T, Dim)
+        
         sem_llm_proj = self.llm_proj(sem_latent)
         loss_llm = 1.0 - F.cosine_similarity(sem_llm_proj, llm_feat, dim=-1).mean()
 
@@ -204,7 +206,7 @@ class CompressorTrainer(L.LightningModule):
         # WavLM contains both semantic and acoustic info. We want the prosody codebook
         # to capture what's missing from semantic (intonation, speaker style, etc).
         # So we distill WavLM into the sum of (Semantic + Prosody).
-        sem_pros_latent = (sem_res.x + pros_res.x).transpose(1, 2)  # (B, T, Dim)
+        sem_pros_latent = sem_pros_res.x.transpose(1, 2)  # (B, T, Dim)
         sem_pros_wavlm_proj = self.wavlm_proj(sem_pros_latent)
         loss_wavlm = (
             1.0 - F.cosine_similarity(sem_pros_wavlm_proj, wavlm_feat, dim=-1).mean()

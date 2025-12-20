@@ -31,7 +31,7 @@ from .quantization import (
     BaseQuantizer,
     SplitResidualVectorQuantizer,
     ResidualVectorQuantizer,
-    SplitResidualVectorQuantizerWithProsody,
+    SplitResidualVectorQuantizerWithResidualProsody,
 )
 from .modules.conv import pad_for_conv1d
 from .modules.resample import ConvDownsample1d, ConvTrUpsample1d
@@ -588,7 +588,7 @@ def get_mimi_with_prosody_from_original_mimi_weights(
     decoder_transformer = transformer.ProjectedTransformer(
         device=device, **vars(mimi_config.transformer)
     )
-    quantizer = SplitResidualVectorQuantizerWithProsody(
+    quantizer = SplitResidualVectorQuantizerWithResidualProsody(
         **vars(mimi_config.quantizer),
     )
     model = MimiModel(
