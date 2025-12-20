@@ -53,7 +53,7 @@ def train():
     # 2. Data Module
     data_module = CompressorDataLoader(
         data_path=DATASET_PATH,
-        batch_size=32,        # Adjust based on GPU memory
+        batch_size=8,        # Adjust based on GPU memory
         num_workers=4,       # Adjust based on CPU cores
         sample_rate=mimi_config.sample_rate, # 24000
         fps=mimi_config.frame_rate,          # 12.5
@@ -75,15 +75,6 @@ def train():
         every_n_epochs=1,
     )
 
-    # Early stopping callback
-    early_stopping_callback = EarlyStopping(
-        monitor="train/loss_g",
-        patience=10,  # Number of epochs with no improvement after which training will be stopped
-        mode="min",
-        min_delta=0.001,  # Minimum change to qualify as improvement
-        verbose=True,
-    )
-
     # Logger
     logger = WandbLogger(project="amy_compressor")
 
@@ -91,11 +82,10 @@ def train():
         max_epochs=100,
         accelerator="auto",
         devices="auto", # Use all available GPUs
-        precision="bf16-mixed", # Mixed precision for faster training
+        precision="32", # Mixed precision for faster training
         callbacks=[
             checkpoint_callback,
             LearningRateMonitor(logging_interval="step"),
-            early_stopping_callback,
         ],
         logger=logger,
         # strategy="ddp_find_unused_parameters_true", # If using DDP
