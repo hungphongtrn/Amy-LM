@@ -77,7 +77,7 @@ def train():
 
     # Logger
     logger = WandbLogger(project="amy_compressor")
-    logger.watch(model, log="gradients", log_freq=100)
+    logger.watch(model, log="gradients", log_freq=100, log_graph=True)
 
     trainer = L.Trainer(
         max_epochs=100,
