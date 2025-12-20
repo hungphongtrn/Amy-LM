@@ -27,7 +27,6 @@ from trainer.adversarial_losses import (
 @dataclass
 class CompressorTrainerConfig:
     orignal_filename: str
-    mimi_config: MimiConfig = field(default_factory=lambda: DEFAULT_MIMI_CONFIG)
     device: str
     num_codebooks: int
 
@@ -44,6 +43,8 @@ class CompressorTrainerConfig:
     alpha_msspec: float
     alpha_wavlm: float
     alpha_llm: float
+
+    mimi_config: MimiConfig = field(default_factory=lambda: DEFAULT_MIMI_CONFIG)
 
 
 class CompressorTrainer(L.LightningModule):
