@@ -62,6 +62,12 @@ class CompressorTrainer(L.LightningModule):
         )
         self.model.train()
 
+        for param in self.model.encoder.parameters():
+            param.requires_grad = False
+        if self.model.encoder_transformer is not None:
+            for param in self.model.encoder_transformer.parameters():
+                param.requires_grad = False
+
         self.frame_rate = self.config.mimi_config.frame_rate
 
         # 2. Discriminator (Multi-Scale STFT)
