@@ -14,6 +14,7 @@ for Mimi. Also defines the main interface that a model must follow to be usable 
 """
 
 import logging
+import copy
 import typing as tp
 from abc import abstractmethod
 from dataclasses import dataclass
@@ -506,6 +507,10 @@ def _is_safetensors(path: Path | str) -> bool:
     return Path(path).suffix in (".safetensors", ".sft", ".sfts")
 
 
+def _is_lightning_checkpoint(path: Path | str) -> bool:
+    return Path(path).suffix in (".ckpt")
+
+
 def get_mimi(
     filename: str | Path | None,
     mimi_config: MimiConfig | None = None,
@@ -573,7 +578,8 @@ def get_mimi_with_prosody_from_original_mimi_weights(
 ) -> MimiModel:
     if mimi_config is None:
         mimi_config = DEFAULT_MIMI_CONFIG
-    mimi_config.quantizer.n_q = 32 + 1 # 32 for the original mimi, 1 for the prosody
+    mimi_config = copy.deepcopy(mimi_config)
+    mimi_config.quantizer.n_q = 32 + 1  # 32 for the original mimi, 1 for the prosody
     encoder = SEANetEncoder(**vars(mimi_config.seanet))
     decoder = SEANetDecoder(**vars(mimi_config.seanet))
     encoder_transformer = transformer.ProjectedTransformer(
@@ -614,12 +620,28 @@ def get_mimi_with_prosody_from_original_mimi_weights(
 
     if _is_safetensors(filename):
         state = load_file(filename, device=str(device))
-        missing_keys, unexpected_keys = model.load_state_dict(state, strict=False)
-        logger.info(f"Missing keys: {missing_keys}")
-        logger.info(f"Unexpected keys: {unexpected_keys}")
+        missing_keys, unexpected_keys = model.load_state_dict(state)
+    elif _is_lightning_checkpoint(filename):
+        pkg = torch.load(filename, "cpu")
+        state_dict = pkg["state_dict"]
+        # Remove the model. prefix from the state_dict. Only the prefix not in between
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            if k.startswith("model."):
+                new_state_dict[k[6:]] = v
+            else:
+                new_state_dict[k] = v
+        missing_keys, unexpected_keys = model.load_state_dict(
+            new_state_dict, strict=False
+        )
     else:
         pkg = torch.load(filename, "cpu")
-        model.load_state_dict(pkg["model"], strict=False)
+        missing_keys, unexpected_keys = model.load_state_dict(
+            pkg["model"], strict=False
+        )
+
+    logger.info(f"Missing keys: {missing_keys}")
+    logger.info(f"Unexpected keys: {unexpected_keys}")
 
     model.set_num_codebooks(num_codebooks)
     return model

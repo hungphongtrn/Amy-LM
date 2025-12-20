@@ -50,6 +50,7 @@ class CompressorTrainer(L.LightningModule):
         super().__init__()
         self.config = config
         self.automatic_optimization = False  # Manual optimization for GAN
+        self.save_hyperparameters(config)
 
         # 1. Generator (Mimi)
         self.model = get_mimi_with_prosody_from_original_mimi_weights(
