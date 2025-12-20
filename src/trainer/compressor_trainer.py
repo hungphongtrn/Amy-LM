@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import lightning as L
 import torch
 import torch.nn.functional as F
+import wandb
 from torch import nn
 
 from models.mimi.modeling_mimi import get_mimi_with_prosody_from_original_mimi_weights
@@ -60,6 +61,7 @@ class CompressorTrainer(L.LightningModule):
             config.num_codebooks,
         )
         self.model.train()
+
         self.frame_rate = self.config.mimi_config.frame_rate
 
         # 2. Discriminator (Multi-Scale STFT)
@@ -115,7 +117,7 @@ class CompressorTrainer(L.LightningModule):
         opt_d = torch.optim.Adam(
             self.discriminator.parameters(), lr=3e-4, betas=(0.5, 0.9)
         )
-        
+
         # Inject optimizer into AdversarialLoss
         self.adv_loss_wrapper.optimizer = opt_d
 
@@ -184,20 +186,18 @@ class CompressorTrainer(L.LightningModule):
         loss_adv, loss_feat = self.adv_loss_wrapper(out_audio, audio)
 
         # B. Distillation Losses
-        
+
         # 1. LLM Distillation -> Semantic Codebook
         # We want the semantic codebook to capture text/meaning, so we distill LLM features into it.
         sem_latent = sem_res.x.transpose(1, 2)  # (B, T, Dim)
         sem_llm_proj = self.llm_proj(sem_latent)
-        loss_llm = (
-            1.0 - F.cosine_similarity(sem_llm_proj, llm_feat, dim=-1).mean()
-        )
+        loss_llm = 1.0 - F.cosine_similarity(sem_llm_proj, llm_feat, dim=-1).mean()
 
         # 2. WavLM Distillation -> Semantic + Prosody Codebooks
         # WavLM contains both semantic and acoustic info. We want the prosody codebook
         # to capture what's missing from semantic (intonation, speaker style, etc).
         # So we distill WavLM into the sum of (Semantic + Prosody).
-        sem_pros_latent = (sem_res.x + pros_res.x).transpose(1, 2) # (B, T, Dim)
+        sem_pros_latent = (sem_res.x + pros_res.x).transpose(1, 2)  # (B, T, Dim)
         sem_pros_wavlm_proj = self.wavlm_proj(sem_pros_latent)
         loss_wavlm = (
             1.0 - F.cosine_similarity(sem_pros_wavlm_proj, wavlm_feat, dim=-1).mean()
@@ -218,7 +218,9 @@ class CompressorTrainer(L.LightningModule):
         )
 
         self.manual_backward(total_loss_g)
-        self.clip_gradients(opt_g, gradient_clip_val=1.0, gradient_clip_algorithm="norm")
+        self.clip_gradients(
+            opt_g, gradient_clip_val=1.0, gradient_clip_algorithm="norm"
+        )
         opt_g.step()
         opt_g.zero_grad()
         self.untoggle_optimizer(opt_g)
@@ -235,14 +237,14 @@ class CompressorTrainer(L.LightningModule):
         # or optimizer.step() inside a sub-module is fine as long as we handle toggling.
         # However, since `train_adv` calls `optimizer.step()`, we should ensure it's compatible.
         # `AdversarialLoss.train_adv` does: zero_grad -> backward -> step.
-        
+
         # We need to compute loss_d for logging though.
         loss_d = self.adv_loss_wrapper.train_adv(out_audio_detached, audio)
-        
+
         # We don't need to call manual_backward or step here because train_adv does it.
-        # But we might want to clip gradients if needed. 
+        # But we might want to clip gradients if needed.
         # AdversarialLoss doesn't clip gradients.
-        
+
         self.untoggle_optimizer(opt_d)
 
         # --- Logging ---
@@ -260,4 +262,37 @@ class CompressorTrainer(L.LightningModule):
             on_step=True,
             on_epoch=True,
             logger=True,
+        )
+
+    def validation_step(self, batch: BatchInputData, batch_idx):
+        # audio: (B, 1, T_samples)
+        # wavlm_feat: (B, T_frames, D_wavlm)
+        # llm_feat: (B, T_frames, D_llm)
+        audio = batch.audio
+        latent = self.model.encode(audio)
+        generated_audio = self.model.decode(latent)
+
+        # --- Log Audio Samples (First batch only) ---
+        if batch_idx == 0:
+            self._log_audio_samples(audio, generated_audio)
+
+    def _log_audio_samples(self, real_audio, generated_audio):
+        """
+        Log 5 random audio samples to wandb.
+        Since batch is shuffled or fixed, taking first 5 of first batch is sufficient
+        for 'random' samples from the test set if we assume test set is shuffled
+        or we just want consistent samples to track progress.
+        """
+
+        wandb.log(
+            {
+                "val/original_audio": wandb.Audio(
+                    real_audio.squeeze(0).cpu().numpy(),
+                    sample_rate=self.config.mimi_config.sample_rate,
+                ),
+                "val/generated_audio": wandb.Audio(
+                    generated_audio.squeeze(0).cpu().numpy(),
+                    sample_rate=self.config.mimi_config.sample_rate,
+                ),
+            }
         )
