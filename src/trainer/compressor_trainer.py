@@ -2,7 +2,7 @@
 Trainer for the compressor model.
 """
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 
 import lightning as L
 import torch
@@ -27,6 +27,7 @@ from trainer.adversarial_losses import (
 @dataclass
 class CompressorTrainerConfig:
     orignal_filename: str
+    mimi_config: MimiConfig = field(default_factory=lambda: DEFAULT_MIMI_CONFIG)
     device: str
     num_codebooks: int
 
@@ -44,15 +45,13 @@ class CompressorTrainerConfig:
     alpha_wavlm: float
     alpha_llm: float
 
-    mimi_config: MimiConfig = field(default_factory=lambda: DEFAULT_MIMI_CONFIG)
-
 
 class CompressorTrainer(L.LightningModule):
     def __init__(self, config: CompressorTrainerConfig):
         super().__init__()
         self.config = config
         self.automatic_optimization = False  # Manual optimization for GAN
-        self.save_hyperparameters(asdict(config))
+        self.save_hyperparameters(config)
 
         # 1. Generator (Mimi)
         self.model = get_mimi_with_prosody_from_original_mimi_weights(
@@ -283,37 +282,23 @@ class CompressorTrainer(L.LightningModule):
         if batch_idx == 0:
             self._log_audio_samples(audio, generated_audio)
 
-    def _log_audio_samples(self, real_audio, generated_audio, num_samples=5):
+    def _log_audio_samples(self, real_audio, generated_audio):
         """
-        Log `num_samples` audio samples to wandb.
+        Log 5 random audio samples to wandb.
+        Since batch is shuffled or fixed, taking first 5 of first batch is sufficient
+        for 'random' samples from the test set if we assume test set is shuffled
+        or we just want consistent samples to track progress.
         """
-        # Ensure we don't try to log more samples than we have in the batch
-        num_samples = min(num_samples, real_audio.size(0))
-
-        # Create lists of wandb.Audio objects
-        original_audios = []
-        generated_audios = []
-
-        for i in range(num_samples):
-            # Extract single sample: (1, T) -> (T,)
-            # We assume mono audio here. If stereo, might need adjustment but usually (C, T) or (T, C).
-            # wandb.Audio expects (samples, channels) or (samples,).
-            # Our data is (B, 1, T), so taking [i] gives (1, T).
-            # squeeze() will give (T,).
-            
-            real_sample = real_audio[i].squeeze().cpu().numpy()
-            gen_sample = generated_audio[i].squeeze().cpu().numpy()
-
-            original_audios.append(
-                wandb.Audio(real_sample, sample_rate=self.config.mimi_config.sample_rate, caption=f"Original {i}")
-            )
-            generated_audios.append(
-                wandb.Audio(gen_sample, sample_rate=self.config.mimi_config.sample_rate, caption=f"Generated {i}")
-            )
 
         wandb.log(
             {
-                "val/original_audio": original_audios,
-                "val/generated_audio": generated_audios,
+                "val/original_audio": wandb.Audio(
+                    real_audio.squeeze(0).cpu().numpy(),
+                    sample_rate=self.config.mimi_config.sample_rate,
+                ),
+                "val/generated_audio": wandb.Audio(
+                    generated_audio.squeeze(0).cpu().numpy(),
+                    sample_rate=self.config.mimi_config.sample_rate,
+                ),
             }
         )
