@@ -6,7 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Amy-LM** (Semantic Bridge: Disentangling Content and Prosody in Neural Audio Codecs) is a research project that modifies the Mimi neural audio codec architecture to disentangle semantic content (text) from prosody (acoustic features) and timbre. The goal is to create a 9-codebook model where:
 - **Codebook 0**: Represents pure semantic content (aligned with LLM hidden states)
-- **Codebook 1**: Represents prosody (aligned with WavLM features)
+- **Codebook 1**: Represents prosody (captures residual prosodic information)
+- **Codebooks 0+1 combined**: Aligned with WavLM features (which contain both semantic and prosodic information)
 - **Codebooks 2-8**: Handle acoustic residuals and timbre reconstruction
 
 ## Architecture
@@ -16,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 1. **Modified Mimi Model** (`src/models/mimi/`):
    - 9-codebook architecture with hierarchical disentanglement
    - Codebook 0 locked to Qwen LLM hidden states (semantic anchor)
-   - Codebook 1 locked to WavLM features (prosody anchor)
+   - Codebooks 0+1 combined locked to WavLM features (prosody anchor)
    - Codebooks 2-8 for acoustic reconstruction
 
 2. **Data Processing Pipeline** (`src/data/`):
@@ -112,7 +113,7 @@ The trainer uses PyTorch Lightning with WandB logging. Configuration is in `trai
 
 ### Key Concepts
 - **Semantic Bridge**: Architecture that enforces hierarchical disentanglement of text, prosody, and timbre
-- **Teacher-Student Distillation**: Codebook 0 predicts Qwen LLM hidden states, Codebook 1 predicts WavLM residual features
+- **Teacher-Student Distillation**: Codebook 0 predicts Qwen LLM hidden states, Codebooks 0+1 combined predict WavLM features
 - **Acoustic Dropout**: Curriculum learning technique to force model dependency on semantic head
 
 ### Target Metrics

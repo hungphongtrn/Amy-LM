@@ -58,7 +58,7 @@ def train():
     # 2. Data Module
     data_module = CompressorDataLoader(
         data_path=DATASET_PATH,
-        batch_size=16,  # Adjust based on GPU memory
+        batch_size=32,  # Adjust based on GPU memory
         num_workers=4,  # Adjust based on CPU cores
         sample_rate=mimi_config.sample_rate,  # 24000
         fps=mimi_config.frame_rate,  # 12.5
