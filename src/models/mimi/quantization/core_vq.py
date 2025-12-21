@@ -233,12 +233,13 @@ class EuclideanCodebook(nn.Module):
         replace_cluster_usage = (
             self.replaced_usage_ratio * self.cluster_usage.sum() / self.codebook_size
         )
-        self.embedding_sum[:] = torch.where(
-            mask[:, None], replace_cluster_usage * new_vectors, self.embedding_sum
-        )
-        self.cluster_usage[:] = torch.where(
-            mask, replace_cluster_usage, self.cluster_usage
-        )
+        with torch.no_grad():
+            self.embedding_sum[:] = torch.where(
+                mask[:, None], replace_cluster_usage * new_vectors, self.embedding_sum
+            )
+            self.cluster_usage[:] = torch.where(
+                mask, replace_cluster_usage, self.cluster_usage
+            )
 
     def _check_expired_codes(self, batch_samples: torch.Tensor) -> torch.Tensor:
         # Checks whether some centroids are under utilized, and replace them if necessary.
@@ -254,7 +255,7 @@ class EuclideanCodebook(nn.Module):
         expired_codes = self.cluster_usage < threshold_cluster_usage
 
         assert batch_samples.dim() == 2
-        self._replace_expired_codes(batch_samples, mask=expired_codes)
+        self._replace_expired_codes(batch_samples.detach(), mask=expired_codes)
         self._broadcast_buffers()
 
         return expired_codes.float().mean()
@@ -319,22 +320,24 @@ class EuclideanCodebook(nn.Module):
             # and all the workers will take the same decision.
             expired = self._check_expired_codes(x)
             metrics['rvq_expired'] = expired
-            cluster_usage = torch.zeros_like(self.cluster_usage)
-            cluster_usage.scatter_add_(
-                0, flat_codes, torch.ones_like(flat_codes, dtype=cluster_usage.dtype))
-            _ema_inplace(self.cluster_usage, cluster_usage, self.decay)
 
-            if self.initialized:
-                # We report the entropy normalized by that of the uniform distribution,
-                # This means the codebooks are optimally used when entropy=1.
-                metrics['rvq_entropy'] = _compute_entropy(self.cluster_usage) / math.log(self.codebook_size)
+            with torch.no_grad():
+                cluster_usage = torch.zeros_like(self.cluster_usage)
+                cluster_usage.scatter_add_(
+                    0, flat_codes, torch.ones_like(flat_codes, dtype=cluster_usage.dtype))
+                _ema_inplace(self.cluster_usage, cluster_usage, self.decay)
 
-            embedding_sum = torch.zeros_like(self.embedding_sum)
-            # Cast x to match embedding_sum dtype for mixed precision training
-            x_cast = x.to(dtype=embedding_sum.dtype)
-            embedding_sum.scatter_add_(0, repeat(flat_codes, "n -> n d", d=self.dim), x_cast)
-            _ema_inplace(self.embedding_sum, embedding_sum, self.decay)
-            self.register_buffer('_embedding', None)
+                if self.initialized:
+                    # We report the entropy normalized by that of the uniform distribution,
+                    # This means the codebooks are optimally used when entropy=1.
+                    metrics['rvq_entropy'] = _compute_entropy(self.cluster_usage) / math.log(self.codebook_size)
+
+                embedding_sum = torch.zeros_like(self.embedding_sum)
+                # Cast x to match embedding_sum dtype for mixed precision training
+                x_cast = x.to(dtype=embedding_sum.dtype)
+                embedding_sum.scatter_add_(0, repeat(flat_codes, "n -> n d", d=self.dim), x_cast)
+                _ema_inplace(self.embedding_sum, embedding_sum, self.decay)
+                self.register_buffer('_embedding', None)
 
         return _CodebookForwardResult(quantized, codes, metrics)
 

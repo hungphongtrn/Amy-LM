@@ -96,7 +96,7 @@ def train():
         ],
         logger=logger,
         # strategy="ddp_find_unused_parameters_true", # If using DDP
-        enable_progress_bar=True,
+        enable_progress_bar=True
     )
 
     # 5. Fit

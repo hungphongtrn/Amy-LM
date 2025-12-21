@@ -159,11 +159,13 @@ class AdversarialLoss(nn.Module):
         feat = torch.tensor(0.0, device=fake.device)
         with readonly(self.adversary):
             all_logits_fake_is_fake, all_fmap_fake = self.get_adversary_pred(fake)
-            all_logits_real_is_fake, all_fmap_real = self.get_adversary_pred(real)
             n_sub_adversaries = len(all_logits_fake_is_fake)
             for logit_fake_is_fake in all_logits_fake_is_fake:
                 adv += self.loss(logit_fake_is_fake)
             if self.loss_feat:
+                # Compute real features without graph for feature matching
+                with torch.no_grad():
+                    _, all_fmap_real = self.get_adversary_pred(real)
                 for fmap_fake, fmap_real in zip(all_fmap_fake, all_fmap_real):
                     feat += self.loss_feat(fmap_fake, fmap_real)
 
