@@ -84,7 +84,13 @@ class CompressorTrainer(L.LightningModule):
 
         # 3. Distillation Projections
         # Project from Mimi latent dimension to WavLM/LLM dimensions
-        self.wavlm_proj = nn.Linear(self.model.dimension, config.wavlm_dim)
+        # WavLM projection uses MLP for better feature mapping (was linear)
+        hidden_dim = self.model.dimension * 2
+        self.wavlm_proj = nn.Sequential(
+            nn.Linear(self.model.dimension, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, config.wavlm_dim)
+        )
         self.llm_proj = nn.Linear(self.model.dimension, config.llm_dim)
 
         # 4. Losses
@@ -109,6 +115,7 @@ class CompressorTrainer(L.LightningModule):
             loss_fake=get_fake_criterion("hinge"),
             loss_feat=FeatureMatchingLoss(),
             normalize=True,
+            gradient_clip_val=1.0,  # Same as generator gradient clipping
         )
 
     def configure_optimizers(self):

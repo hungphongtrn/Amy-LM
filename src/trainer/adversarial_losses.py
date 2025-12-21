@@ -81,6 +81,7 @@ class AdversarialLoss(nn.Module):
         loss_fake: AdvLossType,
         loss_feat: tp.Optional[FeatLossType] = None,
         normalize: bool = True,
+        gradient_clip_val: tp.Optional[float] = None,
     ):
         super().__init__()
         self.adversary: nn.Module = adversary
@@ -91,6 +92,7 @@ class AdversarialLoss(nn.Module):
         self.loss_fake = loss_fake
         self.loss_feat = loss_feat
         self.normalize = normalize
+        self.gradient_clip_val = gradient_clip_val
 
     def _save_to_state_dict(self, destination, prefix, keep_vars):
         # Add the optimizer state dict inside our own.
@@ -145,6 +147,8 @@ class AdversarialLoss(nn.Module):
 
         self.optimizer.zero_grad()
         loss.backward()
+        if self.gradient_clip_val is not None:
+            torch.nn.utils.clip_grad_norm_(self.adversary.parameters(), self.gradient_clip_val)
         self.optimizer.step()
 
         return loss
