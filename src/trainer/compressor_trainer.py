@@ -1,5 +1,5 @@
 """
-Trainer for the compressor model.
+Trainer for the compressor model (Final Consolidated Version).
 """
 
 from dataclasses import dataclass, field, asdict
@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import wandb
 from torch import nn
 
-from models.mimi.modeling_mimi import get_mimi_with_prosody_from_original_mimi_weights
+from models.mimi.modeling_mimi import get_mimi
 from models.mimi.configuration_mimi import DEFAULT_MIMI_CONFIG, MimiConfig
 from trainer.compressor_data_loader import BatchInputData
 from trainer.mstftd import MultiScaleSTFTDiscriminator
@@ -44,6 +44,9 @@ class CompressorTrainerConfig:
     alpha_wavlm: float
     alpha_llm: float
 
+    lr_g: float
+    lr_d: float
+
     mimi_config: MimiConfig = field(default_factory=lambda: DEFAULT_MIMI_CONFIG)
 
 
@@ -55,7 +58,7 @@ class CompressorTrainer(L.LightningModule):
         self.save_hyperparameters(asdict(config))
 
         # 1. Generator (Mimi)
-        self.model = get_mimi_with_prosody_from_original_mimi_weights(
+        self.model = get_mimi(
             config.orignal_filename,
             config.mimi_config,
             config.device,
@@ -63,6 +66,7 @@ class CompressorTrainer(L.LightningModule):
         )
         self.model.train()
 
+        # Freeze encoder as standard practice for this distillation phase
         for param in self.model.encoder.parameters():
             param.requires_grad = False
         if self.model.encoder_transformer is not None:
@@ -83,14 +87,8 @@ class CompressorTrainer(L.LightningModule):
         )
 
         # 3. Distillation Projections
-        # Project from Mimi latent dimension to WavLM/LLM dimensions
-        # WavLM projection uses MLP for better feature mapping (was linear)
-        hidden_dim = self.model.dimension * 2
-        self.wavlm_proj = nn.Sequential(
-            nn.Linear(self.model.dimension, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, config.wavlm_dim)
-        )
+        # Using simple Linear layers as requested (relying on Normalization for stability)
+        self.wavlm_proj = nn.Linear(self.model.dimension, config.wavlm_dim)
         self.llm_proj = nn.Linear(self.model.dimension, config.llm_dim)
 
         # 4. Losses
@@ -106,7 +104,6 @@ class CompressorTrainer(L.LightningModule):
             )
 
         # Adversarial Loss Wrapper
-        # This handles the logic for G and D losses properly
         self.adv_loss_wrapper = AdversarialLoss(
             adversary=self.discriminator,
             optimizer=None,  # Will be set in configure_optimizers
@@ -115,7 +112,7 @@ class CompressorTrainer(L.LightningModule):
             loss_fake=get_fake_criterion("hinge"),
             loss_feat=FeatureMatchingLoss(),
             normalize=True,
-            gradient_clip_val=1.0,  # Same as generator gradient clipping
+            gradient_clip_val=1.0,
         )
 
     def configure_optimizers(self):
@@ -125,11 +122,11 @@ class CompressorTrainer(L.LightningModule):
             + list(self.wavlm_proj.parameters())
             + list(self.llm_proj.parameters())
         )
-        opt_g = torch.optim.Adam(g_params, lr=3e-4, betas=(0.5, 0.9))
+        opt_g = torch.optim.AdamW(g_params, lr=self.config.lr_g, betas=(0.9, 0.999))
 
         # Discriminator Optimizer
-        opt_d = torch.optim.Adam(
-            self.discriminator.parameters(), lr=3e-4, betas=(0.5, 0.9)
+        opt_d = torch.optim.AdamW(
+            self.discriminator.parameters(), lr=self.config.lr_d, betas=(0.9, 0.999)
         )
 
         # Inject optimizer into AdversarialLoss
@@ -148,78 +145,100 @@ class CompressorTrainer(L.LightningModule):
         wavlm_feat = batch.wavlm_feat
         llm_feat = batch.llm_feat
 
-        # Ensure audio requires grad for some implementations, but generally input doesn't need it.
-        # Forward Pass Generator
+        # --- Forward Pass (Generator) ---
 
         # 1. Encode
-        # emb: (B, Dim, T_frames)
         emb = self.model._encode_to_unquantized_latent(audio)
 
         # 2. Split RVQ Quantization
-        # We need to access the specific quantizer structure: SplitResidualVectorQuantizerWithProsody
         quantizer = self.model.quantizer
 
-        # Semantic + Prosody
+        # Semantic + Prosody (First RVQ group)
         sem_pros_res = quantizer.rvq_first(emb, self.frame_rate)
-        # Acoustic (Rest)
+
+        # Acoustic Residuals (Rest of codebooks)
         if quantizer.rvq_rest is not None:
             ac_res = quantizer.rvq_rest(emb, self.frame_rate)
         else:
             ac_res = None
 
-        # Reconstruct Quantized Latent (Sum)
+        # Reconstruct Total Quantized Latent for Audio Decoder
         emb_quant = sem_pros_res.x
         if ac_res is not None:
             emb_quant = emb_quant + ac_res.x
 
-        # 3. Decode
+        # 3. Decode (Audio Path - Uses RAW magnitudes)
         emb_dec = self.model._to_encoder_framerate(emb_quant)
         if self.model.decoder_transformer is not None:
             state = self.model._streaming_state
             if state is None:
                 (emb_dec,) = self.model.decoder_transformer(emb_dec)
             else:
-                # Training usually doesn't use streaming state
                 (emb_dec,) = state.graphed_tr_dec(emb_dec)
 
         out_audio = self.model.decoder(emb_dec)
 
-        # Trim output to match input length (handling padding)
+        # Trim output to match input length
         if out_audio.shape[-1] >= audio.shape[-1]:
             out_audio = out_audio[..., : audio.shape[-1]]
 
         # --- Generator Optimization ---
-        # Toggle optimizer
         self.toggle_optimizer(opt_g)
 
-        # A. Adversarial Loss (Generator Part) using AdversarialLoss wrapper
-        # The wrapper computes G's adversarial loss and Feature Matching loss
-        # Note: We pass `real` audio to get feature matching target
+        # A. Adversarial Loss
         loss_adv, loss_feat = self.adv_loss_wrapper(out_audio, audio)
 
-        # B. Distillation Losses
+        # B. Distillation Losses (Latent Path - Uses NORMALIZED magnitudes)
 
-        # 1. LLM Distillation -> Semantic Codebook
-        # We want the semantic codebook to capture text/meaning, so we distill LLM features into it.
-        # Extract semantic part from the combined semantic+prosody result
-        sem_codes = sem_pros_res.codes[:, :quantizer.n_q_semantic]
-        sem_latent_rec = quantizer.rvq_first.decode(sem_codes) # (B, Dim, T)
-        sem_latent = sem_latent_rec.transpose(1, 2)  # (B, T, Dim)
-        
-        sem_llm_proj = self.llm_proj(sem_latent)
-        loss_llm = 1.0 - F.cosine_similarity(sem_llm_proj, llm_feat, dim=-1).mean()
+        # --- Prepare Semantic Latents ---
+        # Recover purely semantic latent (Codebook 0)
+        sem_codes = sem_pros_res.codes[:, : quantizer.n_q_semantic]
+        sem_latent_raw = quantizer.rvq_first.decode(sem_codes).transpose(
+            1, 2
+        )  # (B, T, D)
 
-        # 2. WavLM Distillation -> Semantic + Prosody Codebooks
-        # WavLM contains both semantic and acoustic info. We want the prosody codebook
-        # to capture what's missing from semantic (intonation, speaker style, etc).
-        # So we distill WavLM into the sum of (Semantic + Prosody).
-        sem_pros_latent = sem_pros_res.x.transpose(1, 2)  # (B, T, Dim)
-        sem_pros_wavlm_proj = self.wavlm_proj(sem_pros_latent)
-        loss_wavlm = (
-            1.0 - F.cosine_similarity(sem_pros_wavlm_proj, wavlm_feat, dim=-1).mean()
+        # 1. LLM Distillation
+        # Norm(Latent) -> Linear -> Cosine -> Norm(Target)
+        sem_latent_norm = F.layer_norm(sem_latent_raw, (sem_latent_raw.shape[-1],))
+        sem_llm_proj = self.llm_proj(sem_latent_norm)
+
+        # Normalize LLM Target
+        llm_feat_norm = F.layer_norm(llm_feat, (llm_feat.shape[-1],))
+
+        loss_llm = 1.0 - F.cosine_similarity(sem_llm_proj, llm_feat_norm, dim=-1).mean()
+
+        # 2. WavLM Distillation
+        # This targets Semantic + Prosody, but we must block gradients to Semantic
+        # to prevent fighting with loss_llm.
+
+        # Normalize WavLM Target
+        wavlm_feat_norm = F.layer_norm(wavlm_feat, (wavlm_feat.shape[-1],))
+
+        # Reconstruct "Prosody-Only" Gradient Flow:
+        # We want: Input = (Semantic_Detached + Prosody)
+        # We have: sem_pros_res.x (which is Semantic + Prosody sum)
+
+        sem_pros_latent_raw = sem_pros_res.x.transpose(1, 2)  # (B, T, D)
+
+        # Construct the mixed latent where Semantic part is detached
+        # Math: (Sem + Pros) - Sem + Sem_Detached = Pros + Sem_Detached
+        mixed_latent_raw = (
+            sem_pros_latent_raw - sem_latent_raw + sem_latent_raw.detach()
         )
 
-        # C. Reconstruction Loss (Optional / Not in Adv-Only)
+        # Normalize the mixed input before projection
+        mixed_latent_norm = F.layer_norm(
+            mixed_latent_raw, (mixed_latent_raw.shape[-1],)
+        )
+
+        sem_pros_wavlm_proj = self.wavlm_proj(mixed_latent_norm)
+
+        loss_wavlm = (
+            1.0
+            - F.cosine_similarity(sem_pros_wavlm_proj, wavlm_feat_norm, dim=-1).mean()
+        )
+
+        # C. Reconstruction Loss
         loss_msspec = torch.tensor(0.0, device=self.device)
         if not self.config.adversarial_only:
             loss_msspec = self.msspec_loss(out_audio, audio)
@@ -244,22 +263,8 @@ class CompressorTrainer(L.LightningModule):
         # --- Discriminator Optimization ---
         self.toggle_optimizer(opt_d)
 
-        # Detach generated audio so we don't backprop into generator
         out_audio_detached = out_audio.detach()
-
-        # Train Discriminator using AdversarialLoss wrapper
-        # The wrapper's train_adv method handles backward and step internally
-        # Note: In manual optimization with Lightning, calling .backward() directly on loss tensor
-        # or optimizer.step() inside a sub-module is fine as long as we handle toggling.
-        # However, since `train_adv` calls `optimizer.step()`, we should ensure it's compatible.
-        # `AdversarialLoss.train_adv` does: zero_grad -> backward -> step.
-
-        # We need to compute loss_d for logging though.
         loss_d = self.adv_loss_wrapper.train_adv(out_audio_detached, audio)
-
-        # We don't need to call manual_backward or step here because train_adv does it.
-        # But we might want to clip gradients if needed.
-        # AdversarialLoss doesn't clip gradients.
 
         self.untoggle_optimizer(opt_d)
 
@@ -281,43 +286,35 @@ class CompressorTrainer(L.LightningModule):
         )
 
     def validation_step(self, batch: BatchInputData, batch_idx):
-        # audio: (B, 1, T_samples)
-        # wavlm_feat: (B, T_frames, D_wavlm)
-        # llm_feat: (B, T_frames, D_llm)
         audio = batch.audio
         latent = self.model.encode(audio)
         generated_audio = self.model.decode(latent)
 
-        # --- Log Audio Samples (First batch only) ---
         if batch_idx == 0:
             self._log_audio_samples(audio, generated_audio)
 
     def _log_audio_samples(self, real_audio, generated_audio, num_samples=5):
-        """
-        Log `num_samples` audio samples to wandb.
-        """
-        # Ensure we don't try to log more samples than we have in the batch
         num_samples = min(num_samples, real_audio.size(0))
-
-        # Create lists of wandb.Audio objects
         original_audios = []
         generated_audios = []
 
         for i in range(num_samples):
-            # Extract single sample: (1, T) -> (T,)
-            # We assume mono audio here. If stereo, might need adjustment but usually (C, T) or (T, C).
-            # wandb.Audio expects (samples, channels) or (samples,).
-            # Our data is (B, 1, T), so taking [i] gives (1, T).
-            # squeeze() will give (T,).
-            
             real_sample = real_audio[i].squeeze().cpu().numpy()
             gen_sample = generated_audio[i].squeeze().cpu().numpy()
 
             original_audios.append(
-                wandb.Audio(real_sample, sample_rate=self.config.mimi_config.sample_rate, caption=f"Original {i}")
+                wandb.Audio(
+                    real_sample,
+                    sample_rate=self.config.mimi_config.sample_rate,
+                    caption=f"Original {i}",
+                )
             )
             generated_audios.append(
-                wandb.Audio(gen_sample, sample_rate=self.config.mimi_config.sample_rate, caption=f"Generated {i}")
+                wandb.Audio(
+                    gen_sample,
+                    sample_rate=self.config.mimi_config.sample_rate,
+                    caption=f"Generated {i}",
+                )
             )
 
         wandb.log(

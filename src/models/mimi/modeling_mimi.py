@@ -559,7 +559,7 @@ def get_mimi(
 
     if _is_safetensors(filename):
         state = load_file(filename, device=str(device))
-        missing_keys, unexpected_keys = model.load_state_dict(state)
+        missing_keys, unexpected_keys = model.load_state_dict(state, strict=False)
         logger.info(f"Missing keys: {missing_keys}")
         logger.info(f"Unexpected keys: {unexpected_keys}")
     else:
