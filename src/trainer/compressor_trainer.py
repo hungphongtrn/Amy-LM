@@ -8,6 +8,8 @@ import lightning as L
 import torch
 import torch.nn.functional as F
 import wandb
+import torchaudio
+import os
 from torch import nn
 
 from models.mimi.modeling_mimi import get_mimi
@@ -66,7 +68,7 @@ class CompressorTrainer(L.LightningModule):
         )
         self.model.train()
 
-        # Freeze encoder as standard practice for this distillation phase
+        # # Freeze encoder as standard practice for this distillation phase
         for param in self.model.encoder.parameters():
             param.requires_grad = False
         if self.model.encoder_transformer is not None:
@@ -87,9 +89,25 @@ class CompressorTrainer(L.LightningModule):
         )
 
         # 3. Distillation Projections
-        # Using simple Linear layers as requested (relying on Normalization for stability)
-        self.wavlm_proj = nn.Linear(self.model.dimension, config.wavlm_dim)
-        self.llm_proj = nn.Linear(self.model.dimension, config.llm_dim)
+        # Using Conv1d with larger kernel to allow more temporal adaptation (Kernel 5)
+        # Increased capacity with wider hidden dimension
+        self.wavlm_proj = nn.Sequential(
+            nn.Conv1d(self.model.dimension, config.wavlm_dim * 2, kernel_size=5, padding=2),
+            nn.GELU(),
+            nn.Conv1d(config.wavlm_dim * 2, config.wavlm_dim, kernel_size=1),
+        )
+
+        # LLM Projection (Distill Semantic)
+        if hasattr(config, "llm_dim") and config.llm_dim > 0:
+            self.llm_proj = nn.Sequential(
+                nn.Conv1d(
+                    self.model.dimension, config.llm_dim * 2, kernel_size=5, padding=2
+                ),
+                nn.GELU(),
+                nn.Conv1d(config.llm_dim * 2, config.llm_dim, kernel_size=1),
+            )
+        else:
+            self.llm_proj = None
 
         # 4. Losses
         if not config.adversarial_only:
@@ -116,31 +134,45 @@ class CompressorTrainer(L.LightningModule):
         )
 
     def configure_optimizers(self):
-        # Generator Optimizer (Mimi + Projections)
-        g_params = (
-            list(self.model.parameters())
-            + list(self.wavlm_proj.parameters())
-            + list(self.llm_proj.parameters())
+        # 1. Generator Optimizer (Mimi Model only - Decoder/Quantizer)
+        # GAN standard betas for stability
+        opt_g = torch.optim.AdamW(
+            self.model.parameters(), 
+            lr=self.config.lr_g, 
+            betas=(0.5, 0.9)
         )
-        opt_g = torch.optim.AdamW(g_params, lr=self.config.lr_g, betas=(0.9, 0.999))
 
-        # Discriminator Optimizer
+        # 2. Discriminator Optimizer
+        # GAN standard betas
         opt_d = torch.optim.AdamW(
-            self.discriminator.parameters(), lr=self.config.lr_d, betas=(0.9, 0.999)
+            self.discriminator.parameters(), 
+            lr=self.config.lr_d, 
+            betas=(0.5, 0.9)
         )
 
-        # Inject optimizer into AdversarialLoss
+        # 3. Projection Optimizer ("The Rest" - Distillation Projections)
+        # Default betas for regression/feature matching tasks
+        proj_params = list(self.wavlm_proj.parameters())
+        if self.llm_proj is not None:
+            proj_params += list(self.llm_proj.parameters())
+            
+        opt_proj = torch.optim.AdamW(
+            proj_params, 
+            lr=self.config.lr_g, # Use same LR as generator for now
+            betas=(0.9, 0.999)
+        )
+
+        # Inject optimizer into AdversarialLoss (needs D optimizer)
         self.adv_loss_wrapper.optimizer = opt_d
 
-        return [opt_g, opt_d]
+        return [opt_g, opt_d, opt_proj]
 
     def training_step(self, batch: BatchInputData, batch_idx):
-        opt_g, opt_d = self.optimizers()
+        opt_g, opt_d, opt_proj = self.optimizers()
 
         # Unpack batch
         # audio: (B, 1, T_samples)
         # wavlm_feat: (B, T_frames, D_wavlm)
-        # llm_feat: (B, T_frames, D_llm)
         audio = batch.audio
         wavlm_feat = batch.wavlm_feat
         llm_feat = batch.llm_feat
@@ -183,60 +215,77 @@ class CompressorTrainer(L.LightningModule):
             out_audio = out_audio[..., : audio.shape[-1]]
 
         # --- Generator Optimization ---
-        self.toggle_optimizer(opt_g)
+        # Note: We technically don't need to toggle for manual backward per se, 
+        # but it's good practice for Lightning hooks. 
+        # We'll consider opt_g as the primary context.
+        # self.toggle_optimizer(opt_g) # Implicitly handled if needed, or just run manually.
 
         # A. Adversarial Loss
         loss_adv, loss_feat = self.adv_loss_wrapper(out_audio, audio)
 
         # B. Distillation Losses (Latent Path - Uses NORMALIZED magnitudes)
 
-        # --- Prepare Semantic Latents ---
-        # Recover purely semantic latent (Codebook 0)
-        sem_codes = sem_pros_res.codes[:, : quantizer.n_q_semantic]
-        sem_latent_raw = quantizer.rvq_first.decode(sem_codes).transpose(
-            1, 2
-        )  # (B, T, D)
-
-        # 1. LLM Distillation
-        # Norm(Latent) -> Linear -> Cosine -> Norm(Target)
-        sem_latent_norm = F.layer_norm(sem_latent_raw, (sem_latent_raw.shape[-1],))
-        sem_llm_proj = self.llm_proj(sem_latent_norm)
-
-        # Normalize LLM Target
-        llm_feat_norm = F.layer_norm(llm_feat, (llm_feat.shape[-1],))
-
-        loss_llm = 1.0 - F.cosine_similarity(sem_llm_proj, llm_feat_norm, dim=-1).mean()
-
-        # 2. WavLM Distillation
-        # This targets Semantic + Prosody, but we must block gradients to Semantic
-        # to prevent fighting with loss_llm.
-
-        # Normalize WavLM Target
+        # WavLM Distillation targets the first RVQ group (Semantic + Prosody)
         wavlm_feat_norm = F.layer_norm(wavlm_feat, (wavlm_feat.shape[-1],))
 
-        # Reconstruct "Prosody-Only" Gradient Flow:
-        # We want: Input = (Semantic_Detached + Prosody)
-        # We have: sem_pros_res.x (which is Semantic + Prosody sum)
-
         sem_pros_latent_raw = sem_pros_res.x.transpose(1, 2)  # (B, T, D)
-
-        # Construct the mixed latent where Semantic part is detached
-        # Math: (Sem + Pros) - Sem + Sem_Detached = Pros + Sem_Detached
-        mixed_latent_raw = (
-            sem_pros_latent_raw - sem_latent_raw + sem_latent_raw.detach()
+        sem_pros_norm = F.layer_norm(
+            sem_pros_latent_raw, (sem_pros_latent_raw.shape[-1],)
         )
 
-        # Normalize the mixed input before projection
-        mixed_latent_norm = F.layer_norm(
-            mixed_latent_raw, (mixed_latent_raw.shape[-1],)
-        )
+        # Transpose for Conv1d: (B, T, D) -> (B, D, T)
+        sem_pros_norm_t = sem_pros_norm.transpose(1, 2)
+        # Project and transpose back: (B, D_wavlm, T) -> (B, T, D_wavlm)
+        sem_pros_wavlm_proj = self.wavlm_proj(sem_pros_norm_t).transpose(1, 2)
 
-        sem_pros_wavlm_proj = self.wavlm_proj(mixed_latent_norm)
+        # Ensure shapes match before cosine similarity (handle potential padding differences)
+        T_wavlm = wavlm_feat_norm.shape[1]
+        T_proj = sem_pros_wavlm_proj.shape[1]
+        
+        if T_wavlm != T_proj:
+             min_t = min(T_wavlm, T_proj)
+             wavlm_feat_norm = wavlm_feat_norm[:, :min_t, :]
+             sem_pros_wavlm_proj = sem_pros_wavlm_proj[:, :min_t, :]
 
         loss_wavlm = (
             1.0
             - F.cosine_similarity(sem_pros_wavlm_proj, wavlm_feat_norm, dim=-1).mean()
         )
+
+        # LLM Distillation (Targets Semantic Only)
+        loss_llm = torch.tensor(0.0, device=self.device)
+        if self.llm_proj is not None:
+             # Extract codes for Semantic layer (index 0)
+             # sem_pros_res.codes is shape [B, K, T]
+             # We assume semantic is always the first codebook
+             sem_codes = sem_pros_res.codes[:, : quantizer.n_q_semantic, :]
+             
+             # Decode separated semantic latent
+             # [B, T, D] <- [B, K, T]  (Decode expects [B, K, T])
+             sem_emb = quantizer.rvq_first.decode(sem_codes)
+             
+             # Prepare for projection
+             sem_emb_t = sem_emb.transpose(1, 2) # (B, D, T) -> (B, T, D) for layer norm
+             sem_emb_norm = F.layer_norm(sem_emb_t, (sem_emb_t.shape[-1],)).transpose(1, 2) # Back to (B, D, T)
+             
+             # Project
+             sem_llm_proj = self.llm_proj(sem_emb_norm).transpose(1, 2) # (B, T, D_llm)
+             
+             llm_feat_norm = F.layer_norm(llm_feat, (llm_feat.shape[-1],))
+             
+             # Align shapes
+             T_llm = llm_feat_norm.shape[1]
+             T_proj_llm = sem_llm_proj.shape[1]
+             
+             if T_llm != T_proj_llm:
+                  min_t_llm = min(T_llm, T_proj_llm)
+                  llm_feat_norm = llm_feat_norm[:, :min_t_llm, :]
+                  sem_llm_proj = sem_llm_proj[:, :min_t_llm, :]
+                  
+             loss_llm = (
+                 1.0
+                 - F.cosine_similarity(sem_llm_proj, llm_feat_norm, dim=-1).mean()
+            )
 
         # C. Reconstruction Loss
         loss_msspec = torch.tensor(0.0, device=self.device)
@@ -248,20 +297,28 @@ class CompressorTrainer(L.LightningModule):
             self.config.alpha_adv * loss_adv
             + self.config.alpha_feat * loss_feat
             + self.config.alpha_wavlm * loss_wavlm
-            + self.config.alpha_llm * loss_llm
             + self.config.alpha_msspec * loss_msspec
         )
+        
+        if self.llm_proj is not None:
+             total_loss_g += self.config.alpha_llm * loss_llm
 
         self.manual_backward(total_loss_g)
+        
+        # Optimize Generator (Mimi)
         self.clip_gradients(
             opt_g, gradient_clip_val=1.0, gradient_clip_algorithm="norm"
         )
         opt_g.step()
         opt_g.zero_grad()
-        self.untoggle_optimizer(opt_g)
+        
+        # Optimize Projections
+        self.clip_gradients(
+            opt_proj, gradient_clip_val=1.0, gradient_clip_algorithm="norm"
+        )
+        opt_proj.step()
+        opt_proj.zero_grad()
 
-        # --- Discriminator Optimization ---
-        self.toggle_optimizer(opt_d)
 
         out_audio_detached = out_audio.detach()
         loss_d = self.adv_loss_wrapper.train_adv(out_audio_detached, audio)
@@ -269,16 +326,20 @@ class CompressorTrainer(L.LightningModule):
         self.untoggle_optimizer(opt_d)
 
         # --- Logging ---
-        self.log_dict(
-            {
+        logs = {
                 "train/loss_g": total_loss_g,
                 "train/loss_d": loss_d,
                 "train/adv_g": loss_adv,
                 "train/feat": loss_feat,
                 "train/wavlm": loss_wavlm,
-                "train/llm": loss_llm,
                 "train/msspec": loss_msspec,
-            },
+            }
+            
+        if self.llm_proj is not None:
+            logs["train/llm"] = loss_llm
+            
+        self.log_dict(
+            logs,
             prog_bar=True,
             on_step=True,
             on_epoch=True,
@@ -286,12 +347,60 @@ class CompressorTrainer(L.LightningModule):
         )
 
     def validation_step(self, batch: BatchInputData, batch_idx):
-        audio = batch.audio
-        latent = self.model.encode(audio)
-        generated_audio = self.model.decode(latent)
+        # Only run on the first batch to act as a "single file" test
+        if batch_idx > 0:
+            return
 
-        if batch_idx == 0:
-            self._log_audio_samples(audio, generated_audio)
+        # Target audio path
+        target_audio_path = "data/audio/POD1000000018_S0000269.wav"
+
+        if os.path.exists(target_audio_path):
+            # Load specific audio file
+            audio, sr = torchaudio.load(target_audio_path)
+            
+            # Resample if needed
+            if sr != self.config.mimi_config.sample_rate:
+                resampler = torchaudio.transforms.Resample(sr, self.config.mimi_config.sample_rate)
+                audio = resampler(audio)
+            
+            # Ensure it is (1, 1, T)
+            if audio.dim() == 1:
+                audio = audio.unsqueeze(0).unsqueeze(0)
+            elif audio.dim() == 2:
+                audio = audio.unsqueeze(0)
+            
+            # Move to device
+            audio = audio.to(self.device)
+        else:
+            # Fallback to batch audio if target not found
+            print(f"Warning: {target_audio_path} not found. Using batch audio for validation.")
+            audio = batch.audio
+            if audio.dim() == 2:
+                audio = audio.unsqueeze(0)
+        
+        # 1. Encode to Latent
+        # Pad for encoding
+        frame_size = self.model.frame_size
+        _, _, T_samples = audio.shape
+        
+        if T_samples % frame_size != 0:
+            pad_len = frame_size - (T_samples % frame_size)
+            audio_padded = F.pad(audio, (0, pad_len))
+        else:
+            audio_padded = audio
+
+        # Encode
+        latent = self.model.encode(audio_padded)
+        
+        # Decode
+        generated_audio = self.model.decode(latent)
+        
+        # Trim back to original length
+        if generated_audio.shape[-1] > T_samples:
+            generated_audio = generated_audio[..., :T_samples]
+
+        # Log audio
+        self._log_audio_samples(audio, generated_audio, num_samples=1)
 
     def _log_audio_samples(self, real_audio, generated_audio, num_samples=5):
         num_samples = min(num_samples, real_audio.size(0))

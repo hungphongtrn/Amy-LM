@@ -53,6 +53,8 @@ def train():
         alpha_msspec=15.0,       # Reconstruction weight (ignored when adversarial_only=True)
         alpha_wavlm=3.0,         # Increased from 1.0 to prioritize WavLM distillation
         alpha_llm=1.0,
+        lr_g=1e-4,
+        lr_d=1e-4,
     )
 
     # 2. Data Module

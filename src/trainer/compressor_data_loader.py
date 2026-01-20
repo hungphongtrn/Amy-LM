@@ -76,19 +76,40 @@ class CompressorDataLoader(L.LightningDataModule):
 
     def setup(self, stage: Optional[str] = None):
         # Load dataset from disk
-        # We assume the dataset has columns: 'audio', 'wavlm_feat', 'llm_feat', 'llm_times'
         full_dataset = load_from_disk(self.data_path)
 
-        # Calculate split sizes
-        total_size = len(full_dataset)
-        train_size = int(0.8 * total_size)
-        val_size = total_size - train_size
+        target_id = "POD1000000018_S0000269"
+        val_idx = -1
+        
+        # Search for the target index by segment_id optimized
+        try:
+            # Accessing the column directly is much faster than iterating rows
+            segment_ids = full_dataset["segment_id"]
+            val_idx = segment_ids.index(target_id)
+        except ValueError:
+            val_idx = -1
+        
+        if val_idx != -1:
+            # Create a subset with just that one item for validation
+            self.val_ds = torch.utils.data.Subset(full_dataset, [val_idx])
+            # Create a subset with all other items for training
+            train_indices = [i for i in range(len(full_dataset)) if i != val_idx]
+            self.train_ds = torch.utils.data.Subset(full_dataset, train_indices)
+            print(f"✅ Successfully isolated {target_id} for validation.")
+            print(f"📊 Training set size: {len(self.train_ds)}, Val set size: {len(self.val_ds)}")
+        else:
+            print(f"⚠️ Warning: {target_id} not found in dataset. Falling back to default split.")
+            # Calculate split sizes
+            total_size = len(full_dataset)
+            train_size = int(0.8 * total_size)
+            val_size = total_size - train_size
 
-        # reproducible split
-        generator = torch.Generator().manual_seed(self.seed)
-        self.train_ds, self.val_ds = random_split(
-            full_dataset, [train_size, val_size], generator=generator
-        )
+            # reproducible split
+            generator = torch.Generator().manual_seed(self.seed)
+            self.train_ds, self.val_ds = random_split(
+                full_dataset, [train_size, val_size], generator=generator
+            )
+
 
     def train_dataloader(self):
         # For training, we enable random cropping in the collator
@@ -108,17 +129,18 @@ class CompressorDataLoader(L.LightningDataModule):
         )
 
     def val_dataloader(self):
-        # For validation, we can either crop deterministically or return full sequences.
-        # Here we crop to ensure consistent batch shapes for metric calculation.
+        # For validation, we use the single longest file.
+        # We disable cropping (crop_duration=None or huge) to get the full file.
+        # And we set batch_size=1
         collator = AudioCollator(
             sample_rate=self.sample_rate,
             fps=self.fps,
-            crop_duration=self.segment_duration,
+            crop_duration=10000.0, # Large enough to cover the longest file
             training=False,
         )
         return DataLoader(
             self.val_ds,
-            batch_size=self.batch_size,
+            batch_size=1, # One file at a time
             shuffle=False,
             num_workers=self.num_workers,
             collate_fn=collator,
@@ -193,9 +215,27 @@ class AudioCollator:
             duration = audio.shape[0] / self.sample_rate
             total_frames = int(np.ceil(duration * self.fps))
 
-            wavlm_aligned = torch.nn.functional.adaptive_avg_pool1d(
-                wavlm_raw, total_frames
+            # 1. Ensure strictly non-causal AvgPool with Overlap
+            # Kernel=8, Stride=4, Padding=2 (to keep center alignment roughly correct)
+            # This matches the Mimi paper's smoothing strategy (50% overlap).
+            wavlm_aligned = torch.nn.functional.avg_pool1d(
+                wavlm_raw,
+                kernel_size=8,
+                stride=4,
+                padding=2,  # Padding helps handle the edges for non-causal center-ish alignment
+                count_include_pad=False,
             )
+
+            # 2. Handle length mismatch caused by padding/striding
+            # The pool might produce slightly more/less frames than strict duration * 12.5
+            if wavlm_aligned.shape[-1] > total_frames:
+                wavlm_aligned = wavlm_aligned[..., :total_frames]
+            elif wavlm_aligned.shape[-1] < total_frames:
+                # Corner case: pad last frame
+                pad_amt = total_frames - wavlm_aligned.shape[-1]
+                wavlm_aligned = torch.nn.functional.pad(
+                    wavlm_aligned, (0, pad_amt), mode="replicate"
+                )
             wavlm_aligned = wavlm_aligned.squeeze(0).transpose(0, 1)  # (T_frames, D)
 
             # B. LLM Alignment
