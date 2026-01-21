@@ -24,6 +24,12 @@ from trainer.adversarial_losses import (
     get_fake_criterion,
     get_real_criterion,
 )
+from trainer.evaluation import (
+    reconstruction_ablation,
+    extract_codebook_metrics,
+    si_sdr,
+    ProbingEvaluator,
+)
 
 
 @dataclass
@@ -131,6 +137,12 @@ class CompressorTrainer(L.LightningModule):
             loss_feat=FeatureMatchingLoss(),
             normalize=True,
             gradient_clip_val=1.0,
+        )
+
+        # 5. Probing Evaluator
+        self.probing_evaluator = ProbingEvaluator(
+            model_dim=self.model.dimension,
+            device=config.device
         )
 
     def configure_optimizers(self):
@@ -399,7 +411,59 @@ class CompressorTrainer(L.LightningModule):
         if generated_audio.shape[-1] > T_samples:
             generated_audio = generated_audio[..., :T_samples]
 
-        # Log audio
+        # === Stage 1: Intrinsic Evaluation ===
+        
+        # 1. Reconstruction Ablation (SI-SDR per codebook group)
+        ablation_results = reconstruction_ablation(self.model, audio)
+        
+        # 2. Codebook Health Metrics
+        codebook_metrics = extract_codebook_metrics(self.model.quantizer)
+        
+        # 3. Overall SI-SDR for full reconstruction
+        overall_sisdr = si_sdr(generated_audio, audio)
+        
+        # 4. Probing Evaluation (Phoneme vs Pitch on each head)
+        # We only run this on the first batch to avoid too much overhead
+        # Probing Head 0 (Semantic)
+        head_0_results = self.probing_evaluator.run_probing_eval(
+            self.model,
+            encoder_fn=lambda x: self.model.quantizer.rvq_first.decode(self.model.encode(x)[:, :1, :]),
+            max_batches=5
+        )
+        
+        # Probing Head 1 (Prosody)
+        head_1_results = self.probing_evaluator.run_probing_eval(
+            self.model,
+            encoder_fn=lambda x: self.model.quantizer.rvq_first.decode(self.model.encode(x)[:, 1:2, :]),
+            max_batches=5
+        )
+        
+        # Build metrics dict for logging
+        eval_metrics = {
+            "val/sisdr_semantic_only": ablation_results.sisdr_semantic_only,
+            "val/sisdr_semantic_prosody": ablation_results.sisdr_semantic_prosody,
+            "val/sisdr_all": ablation_results.sisdr_all,
+            "val/sisdr_overall": overall_sisdr.item(),
+            "val/codebook_entropy_avg": codebook_metrics.avg_entropy,
+            "val/codebook_usage_avg": codebook_metrics.avg_usage,
+            # Head 0 Probing
+            "val/probe_head0_phone_acc": head_0_results["phoneme_accuracy"],
+            "val/probe_head0_pitch_mae": head_0_results["pitch_mae"],
+            # Head 1 Probing
+            "val/probe_head1_phone_acc": head_1_results["phoneme_accuracy"],
+            "val/probe_head1_pitch_mae": head_1_results["pitch_mae"],
+        }
+        
+        # Add per-codebook metrics
+        for idx, entropy in codebook_metrics.entropy.items():
+            eval_metrics[f"val/entropy_{idx}"] = entropy
+        for idx, usage in codebook_metrics.usage_ratio.items():
+            eval_metrics[f"val/usage_{idx}"] = usage
+        
+        # Log metrics
+        self.log_dict(eval_metrics, prog_bar=False, logger=True)
+
+        # Log audio samples
         self._log_audio_samples(audio, generated_audio, num_samples=1)
 
     def _log_audio_samples(self, real_audio, generated_audio, num_samples=5):
