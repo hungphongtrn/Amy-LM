@@ -12,7 +12,7 @@ import torchaudio
 import os
 from torch import nn
 
-from models.mimi.modeling_mimi import get_mimi
+from models.mimi.modeling_mimi import get_mimi_with_prosody_from_original_mimi_weights
 from models.mimi.configuration_mimi import DEFAULT_MIMI_CONFIG, MimiConfig
 from trainer.compressor_data_loader import BatchInputData
 from trainer.mstftd import MultiScaleSTFTDiscriminator
@@ -66,7 +66,7 @@ class CompressorTrainer(L.LightningModule):
         self.save_hyperparameters(asdict(config))
 
         # 1. Generator (Mimi)
-        self.model = get_mimi(
+        self.model = get_mimi_with_prosody_from_original_mimi_weights(
             config.orignal_filename,
             config.mimi_config,
             config.device,
@@ -95,23 +95,12 @@ class CompressorTrainer(L.LightningModule):
         )
 
         # 3. Distillation Projections
-        # Using Conv1d with larger kernel to allow more temporal adaptation (Kernel 5)
-        # Increased capacity with wider hidden dimension
-        self.wavlm_proj = nn.Sequential(
-            nn.Conv1d(self.model.dimension, config.wavlm_dim * 2, kernel_size=5, padding=2),
-            nn.GELU(),
-            nn.Conv1d(config.wavlm_dim * 2, config.wavlm_dim, kernel_size=1),
-        )
+        # Restore to Linear projections as per rollback
+        self.wavlm_proj = nn.Linear(self.model.dimension, config.wavlm_dim)
 
         # LLM Projection (Distill Semantic)
         if hasattr(config, "llm_dim") and config.llm_dim > 0:
-            self.llm_proj = nn.Sequential(
-                nn.Conv1d(
-                    self.model.dimension, config.llm_dim * 2, kernel_size=5, padding=2
-                ),
-                nn.GELU(),
-                nn.Conv1d(config.llm_dim * 2, config.llm_dim, kernel_size=1),
-            )
+            self.llm_proj = nn.Linear(self.model.dimension, config.llm_dim)
         else:
             self.llm_proj = None
 
@@ -136,7 +125,6 @@ class CompressorTrainer(L.LightningModule):
             loss_fake=get_fake_criterion("hinge"),
             loss_feat=FeatureMatchingLoss(),
             normalize=True,
-            gradient_clip_val=1.0,
         )
 
         # 5. Probing Evaluator
@@ -245,10 +233,8 @@ class CompressorTrainer(L.LightningModule):
             sem_pros_latent_raw, (sem_pros_latent_raw.shape[-1],)
         )
 
-        # Transpose for Conv1d: (B, T, D) -> (B, D, T)
-        sem_pros_norm_t = sem_pros_norm.transpose(1, 2)
-        # Project and transpose back: (B, D_wavlm, T) -> (B, T, D_wavlm)
-        sem_pros_wavlm_proj = self.wavlm_proj(sem_pros_norm_t).transpose(1, 2)
+        # Use Linear projection (B, T, D) -> (B, T, D_wavlm)
+        sem_pros_wavlm_proj = self.wavlm_proj(sem_pros_norm)
 
         # Ensure shapes match before cosine similarity (handle potential padding differences)
         T_wavlm = wavlm_feat_norm.shape[1]
@@ -276,12 +262,8 @@ class CompressorTrainer(L.LightningModule):
              # [B, T, D] <- [B, K, T]  (Decode expects [B, K, T])
              sem_emb = quantizer.rvq_first.decode(sem_codes)
              
-             # Prepare for projection
-             sem_emb_t = sem_emb.transpose(1, 2) # (B, D, T) -> (B, T, D) for layer norm
-             sem_emb_norm = F.layer_norm(sem_emb_t, (sem_emb_t.shape[-1],)).transpose(1, 2) # Back to (B, D, T)
-             
-             # Project
-             sem_llm_proj = self.llm_proj(sem_emb_norm).transpose(1, 2) # (B, T, D_llm)
+             # Project using Linear layer
+             sem_llm_proj = self.llm_proj(sem_emb_norm.transpose(1, 2)) # (B, T, D_llm)
              
              llm_feat_norm = F.layer_norm(llm_feat, (llm_feat.shape[-1],))
              

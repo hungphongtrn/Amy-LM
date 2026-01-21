@@ -47,11 +47,11 @@ def train():
         num_codebooks=9,
         wavlm_dim=1024,
         llm_dim=2048,
-        adversarial_only=True,   # Set to True for adversarial fine-tuning phase
-        alpha_adv=1.5,           # Increased from 1.0 for better adversarial balance
+        adversarial_only=False,  # Set to False for adaptation/warmup phase
+        alpha_adv=1.0,           # Lower adversarial weight for stability
         alpha_feat=4.0,
-        alpha_msspec=15.0,       # Reconstruction weight (ignored when adversarial_only=True)
-        alpha_wavlm=3.0,         # Increased from 1.0 to prioritize WavLM distillation
+        alpha_msspec=15.0,       # High reconstruction weight to force adaptation
+        alpha_wavlm=1.0,
         alpha_llm=1.0,
         lr_g=1e-4,
         lr_d=1e-4,
@@ -60,7 +60,7 @@ def train():
     # 2. Data Module
     data_module = CompressorDataLoader(
         data_path=DATASET_PATH,
-        batch_size=24,  # Adjust based on GPU memory
+        batch_size=32,  # Adjust based on GPU memory
         num_workers=4,  # Adjust based on CPU cores
         sample_rate=mimi_config.sample_rate,  # 24000
         fps=mimi_config.frame_rate,  # 12.5
@@ -73,12 +73,12 @@ def train():
 
     # 4. Trainer
     # Checkpoint callback
+    run_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     checkpoint_callback = ModelCheckpoint(
-        dirpath="checkpoints/compressor",
-        filename="amy-compressor-{epoch:02d}"
-        + datetime.now().strftime("%d_%m_%Y_%H_%M"),
+        dirpath=os.path.join("checkpoints/compressor", run_time),
+        filename="amy-compressor-{epoch:02d}",
         save_top_k=3,
-        monitor="train/wavlm",  # Monitor WavLM distillation loss for adversarial phase
+        monitor="train/msspec",  # Monitor reconstruction loss for Stage 1
         mode="min",
         every_n_epochs=1,
     )
