@@ -10,31 +10,31 @@ See: .planning/PROJECT.md (updated 2026-01-31)
 ## Current Position
 
 Phase: 1 of 4 (Data Pipeline)
-Plan: 4 of 4 in current phase (gap closure complete)
-Status: Phase 1 complete - all plans + gap closure executed
-Last activity: 2026-01-31 - Completed 01-04 Package Importability (gap closure)
+Plan: 5 of 5 in current phase (all plans complete)
+Status: Phase 1 complete - all UAT gaps closed
+Last activity: 2026-01-31 - Completed 01-05 LLM Neutralizer Discoverability (gap closure)
 
-Progress: [██████████] 100% (4/4 plans including gap closure)
+Progress: [██████████] 100% (5/5 plans including gap closure)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 3
-- Average duration: 4 min
+- Total plans completed: 5
+- Average duration: 3 min
 - Total execution time: 0.25 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 1. Data Pipeline | 3 | 3 | 4 min |
+| 1. Data Pipeline | 5 | 5 | 3 min |
 | 2. Speech Synthesis | 0 | 3 | - |
 | 3. Benchmark Evaluation | 0 | 3 | - |
 | 4. Results & Visualization | 0 | 2 | - |
 
 **Recent Trend:**
-- Last 5 plans: 3 completed
-- Trend: Phase 1 complete
+- Last 5 plans: 5 completed
+- Trend: Phase 1 complete with all gap closures
 
 ## Accumulated Context
 
@@ -46,6 +46,8 @@ Recent decisions affecting current work:
 - **01-01: Data pipeline parser implementation** - Used stdlib csv module (no pandas), auto-detect .data/ over data/, suffix-based file discovery
 - **01-02: Neutralizer implementation** - Used stdlib urllib.request for OpenAI API (no httpx), emotion keyword matching with frozenset, skip empty source_text samples
 - **01-03: HF dataset builder** - Used datasets.Dataset.from_list + DatasetDict.save_to_disk, stratified sampling by prosody_style, seed=42 for determinism
+- **01-04: Package importability fix** - Added lazy imports in pyproject.toml for proactive_sat namespace package
+- **01-05: Auto-resolving neutralizer mode** - Made 'auto' default, resolves to 'openai' if OPENAI_API_KEY set, else 'rule_based'
 
 ### Pending Todos
 
@@ -60,10 +62,10 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-01-31
-Stopped at: Completed 01-04 Package Importability (gap closure) - Phase 1 UAT ready to re-run
+Stopped at: Completed 01-05 LLM Neutralizer Discoverability - Phase 1 UAT gaps closed
 Resume file: None
 
-**Phase 1 Complete:** All plans + gap closure executed. Ready to proceed to Phase 2 (Speech Synthesis) after UAT verification.
+**Phase 1 Complete:** All 5 plans executed. All UAT gaps resolved. Ready for Phase 2 (Speech Synthesis).
 
 ## Artifacts Generated
 
