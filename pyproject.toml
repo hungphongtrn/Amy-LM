@@ -19,7 +19,6 @@ dependencies = [
     "torchcodec>=0.9.1",
     "transformers>=4.57.3",
     "wandb>=0.23.1",
-    "wheel>=0.45.1",
 ]
 
 [project.optional-dependencies]
