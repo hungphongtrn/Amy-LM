@@ -55,9 +55,6 @@ class Qwen3TTSWrapper:
                 self.repo_path,
                 device_map=device_map,
                 dtype=torch.bfloat16 if self.device == "cuda" else torch.float32,
-                attn_implementation="flash_attention_2"
-                if self.device == "cuda"
-                else "eager",
             )
 
             logger.info("Qwen3-TTS model loaded successfully")
