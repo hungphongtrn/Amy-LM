@@ -1,0 +1,29 @@
+{
+  "Text-Only": {
+    "total": 200,
+    "evaluated": 200,
+    "approved": 175,
+    "rejected": 25,
+    "errors": 0,
+    "accuracy": 0.875,
+    "approval_rate": 0.875
+  },
+  "ASR": {
+    "total": 200,
+    "evaluated": 200,
+    "approved": 172,
+    "rejected": 28,
+    "errors": 0,
+    "accuracy": 0.86,
+    "approval_rate": 0.86
+  },
+  "E2E": {
+    "total": 200,
+    "evaluated": 200,
+    "approved": 166,
+    "rejected": 34,
+    "errors": 0,
+    "accuracy": 0.83,
+    "approval_rate": 0.83
+  }
+}

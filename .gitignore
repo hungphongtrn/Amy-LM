@@ -12,5 +12,3 @@ wandb/
 checkpoints/
 
 .opencode/
-*.wav
-*.jsonl
