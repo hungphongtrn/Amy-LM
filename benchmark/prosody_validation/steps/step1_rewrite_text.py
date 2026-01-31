@@ -152,17 +152,17 @@ def run_step1(
         # Create client
         client = OpenRouterClient()
 
-        try:
-            # Rewrite all items
-            results = asyncio.run(
-                rewrite_batch(
+        async def run_rewrite():
+            """Run rewrite batch and cleanup in same event loop."""
+            try:
+                return await rewrite_batch(
                     client, items, model, "Rewriting utterances to neutral form"
                 )
-            )
+            finally:
+                await client.close()
 
-        finally:
-            asyncio.run(client.close())
-            config.MAX_CONCURRENT_LLM = original_max
+        results = asyncio.run(run_rewrite())
+        config.MAX_CONCURRENT_LLM = original_max
 
         # Sort results by dialog_id to maintain order
         results.sort(key=lambda x: x.get("dialog_id", ""))
