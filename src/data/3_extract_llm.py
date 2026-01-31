@@ -1,5 +1,6 @@
 import torch
 import json
+import difflib
 import numpy as np
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -15,6 +16,90 @@ MODEL_ID = "Qwen/Qwen3-1.7B"
 logging.basicConfig(filename="extraction_errors.log", level=logging.ERROR)
 
 
+def get_token_timestamps_robust(token_ids, word_timings, tokenizer):
+    """
+    Robustly aligns tokens to words using Global Sequence Alignment (Diff).
+    Handles tokenization mismatches, hallucinations, and special tokens gracefully.
+    """
+    # 1. Construct the "Token String" and map characters back to token indices
+    token_str = ""
+    token_char_map = []  # Maps character index in token_str -> token index
+
+    for i, t_id in enumerate(token_ids):
+        # clean_up_tokenization_spaces=False is critical to preserve exact chars
+        t_text = tokenizer.decode([t_id], clean_up_tokenization_spaces=False)
+        token_str += t_text
+        token_char_map.extend([i] * len(t_text))
+
+    # 2. Construct the "Reference String" and map characters to timestamps
+    ref_str = ""
+    ref_char_times = []  # Maps character index in ref_str -> (start, end)
+
+    for w in word_timings:
+        # Fallback to empty string if keys missing, but prefer "text" or "word"
+        w_text = w.get("text") or w.get("word") or ""
+        start, end = w["start"], w["end"]
+
+        ref_str += w_text
+        ref_char_times.extend([(start, end)] * len(w_text))
+
+    # 3. Perform Global Alignment (The Magic)
+    # This finds the longest common subsequence, ignoring noise/mismatches
+    matcher = difflib.SequenceMatcher(None, token_str, ref_str)
+
+    # Initialize alignments with None
+    token_alignments = [None] * len(token_ids)
+
+    # 4. Project Timestamps from Reference to Tokens
+    for match in matcher.get_matching_blocks():
+        # match has (a, b, size):
+        # a = start index in token_str
+        # b = start index in ref_str
+        # size = length of the match
+
+        for k in range(match.size):
+            token_char_idx = match.a + k
+            ref_char_idx = match.b + k
+
+            # Identify which token this character belongs to
+            if token_char_idx < len(token_char_map):
+                tok_idx = token_char_map[token_char_idx]
+
+                # Identify the time of the matching character in reference
+                if ref_char_idx < len(ref_char_times):
+                    time_tuple = ref_char_times[ref_char_idx]
+
+                    # Accumulate timestamps for this token
+                    if token_alignments[tok_idx] is None:
+                        token_alignments[tok_idx] = []
+                    token_alignments[tok_idx].append(time_tuple)
+
+    # 5. Post-process: Resolve tokens that have multiple times or no times
+    final_times = []
+    last_valid_time = [0.0, 0.0]
+
+    for i in range(len(token_ids)):
+        aligns = token_alignments[i]
+
+        if aligns:
+            # If a token spans multiple words (or parts of words),
+            # take the Min Start and Max End of all matching characters.
+            starts = [a[0] for a in aligns]
+            ends = [a[1] for a in aligns]
+            # Handle "inf" or -1 endings if necessary, usually standard floats here
+            cur_start = min(starts)
+            cur_end = max(ends)
+            last_valid_time = [cur_start, cur_end]
+            final_times.append([cur_start, cur_end])
+        else:
+            # unmatched token (hallucination or special char not in reference)
+            # Inherit from previous valid time (Zero-order hold)
+            # Alternatively, you could look ahead, but "stick to previous" is safer for causal streams
+            final_times.append(last_valid_time)
+
+    return final_times
+
+
 def get_token_timestamps(token_ids, word_timings, tokenizer):
     """
     Aligns Qwen tokens to NeMo word-level timestamps using a Shared Window strategy.
@@ -25,15 +110,15 @@ def get_token_timestamps(token_ids, word_timings, tokenizer):
 
     aligned_times = []
     word_idx = 0
-    
+
     # Handle empty timings case
     if not word_timings:
         return [[0.0, 0.0] for _ in token_ids]
 
     w_info = word_timings[word_idx]
     current_word_start = w_info["start"]
-    current_word_end = w_info["end"] # Can be float or "inf"
-    
+    current_word_end = w_info["end"]  # Can be float or "inf"
+
     ref_text = w_info.get("text") or w_info.get("word") or ""
     current_word_chars_left = len(ref_text)
 
@@ -54,7 +139,7 @@ def get_token_timestamps(token_ids, word_timings, tokenizer):
                 w_info = word_timings[word_idx]
                 current_word_start = w_info["start"]
                 current_word_end = w_info["end"]
-                
+
                 ref_text = w_info.get("text") or w_info.get("word") or clean_tok
                 current_word_chars_left = len(ref_text)
             else:
@@ -87,27 +172,27 @@ def main():
     def extract_batch(batch):
         texts = []
         word_alignments_list = []
-        
+
         # 1. Parse alignment data (already contains silence tokens)
         for align_json_str in batch["alignment_json"]:
             try:
                 align_data = json.loads(align_json_str)
                 words = align_data.get("word", [])
-                
+
                 # Use the text field which already includes silence tokens
                 text = align_data.get("text", "")
-                
+
                 # If text is not available, reconstruct from words
                 if not text and words:
                     text = " ".join([w.get("text") or w.get("word", "") for w in words])
-                
+
                 texts.append(text)
                 word_alignments_list.append(words)
             except Exception as e:
                 logging.error(f"Error parsing alignment_json: {e}")
                 texts.append("")
                 word_alignments_list.append([])
-        
+
         # 2. Tokenize & Forward
         inputs = tokenizer(
             texts, return_tensors="pt", padding=True, truncation=True
@@ -125,7 +210,7 @@ def main():
             try:
                 valid_len = inputs.attention_mask[i].sum().item()
                 feat = states[i, :valid_len, :].cpu().numpy().astype(np.float16)
-                
+
                 word_alignments = word_alignments_list[i]
                 if not word_alignments:
                     results_feat.append(feat.tolist())
@@ -133,7 +218,7 @@ def main():
                     continue
 
                 token_ids = inputs.input_ids[i][:valid_len].cpu().tolist()
-                times = get_token_timestamps(token_ids, word_alignments, tokenizer)
+                times = get_token_timestamps_robust(token_ids, word_alignments, tokenizer)
 
                 # Shape Correction
                 if len(times) != valid_len:
@@ -152,14 +237,15 @@ def main():
             except Exception as e:
                 logging.error(f"Error processing sample {i}: {e}")
                 v_len = inputs.attention_mask[i].sum().item()
-                results_feat.append([[0.0]*2048]*v_len)
-                results_time.append([[0.0, 0.0]]*v_len)
+                results_feat.append([[0.0] * 2048] * v_len)
+                results_time.append([[0.0, 0.0]] * v_len)
 
         return {"llm_feat": results_feat, "llm_times": results_time}
 
     ds_llm = ds.map(extract_batch, batched=True, batch_size=BATCH_SIZE)
     ds_llm.push_to_hub(TGT_REPO)
     print("✅ LLM Features Pushed!")
+
 
 if __name__ == "__main__":
     main()
