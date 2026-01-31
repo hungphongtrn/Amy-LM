@@ -21,7 +21,7 @@ from tqdm import tqdm
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 
 # Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import get_config
 from src.utils import setup_logging, read_csv, write_jsonl
