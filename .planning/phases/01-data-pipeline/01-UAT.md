@@ -1,9 +1,9 @@
 ---
-status: complete
+status: diagnosed
 phase: 01-data-pipeline
 source: 01-01-SUMMARY.md, 01-02-SUMMARY.md, 01-03-SUMMARY.md
 started: 2026-01-31T12:00:00Z
-updated: 2026-01-31T12:05:00Z
+updated: 2026-01-31T12:10:00Z
 ---
 
 ## Current Test
@@ -25,11 +25,33 @@ skipped: 0
   reason: "User reported: ModuleNotFoundError: No module named 'proactive_sat'"
   severity: blocker
   test: 1
+  root_cause: "Package 'proactive_sat' is not installed. The pyproject.toml defines 'amy-lm' project but proactive_sat code is in src/proactive_sat/ without proper package configuration."
+  artifacts:
+    - path: "pyproject.toml"
+      issue: "Does not include proactive_sat as installable package"
+    - path: "src/proactive_sat/__init__.py"
+      issue: "Package exists but not configured for import"
+    - path: "src/proactive_sat/data_pipeline/run_pipeline.py"
+      issue: "Imports proactive_sat module which is not available"
+  missing:
+    - "Package configuration to make proactive_sat importable"
+    - "Or PYTHONPATH setup for development mode"
+  debug_session: ""
 - truth: "User can inspect any sample and see both original text and a lexical-neutralized transcript"
   status: failed
   reason: "User reported: This neutralization is using rule-based. I want to use LLM for this task."
   severity: major
   test: 2
+  root_cause: "User unaware that LLM mode exists. Feature already implemented: use `--neutralizer openai` flag and set OPENAI_API_KEY environment variable."
+  artifacts:
+    - path: "src/proactive_sat/data_pipeline/run_pipeline.py"
+      issue: "Already supports --neutralizer openai option (lines 106-110)"
+    - path: "src/proactive_sat/data_pipeline/neutralize.py"
+      issue: "Already implements _call_openai_api() for LLM-based neutralization"
+  missing:
+    - "Documentation/instruction on using LLM mode"
+    - "OPENAI_API_KEY environment setup"
+  debug_session: ""
 
 ### 2. Inspect sample with original and neutralized text
 expected: |
