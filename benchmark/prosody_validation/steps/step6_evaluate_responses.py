@@ -38,10 +38,10 @@ class Appropriate(BaseModel):
 EVALUATION_PROMPT = """You are evaluating whether an AI assistant's response appropriately addresses a user's message.
 
 Context:
-- User's original message: "{original_utterance}"
-- Emotion detected: {emotion}
-- Intent: {intent}
-- Speech act: {speech_act}
+- User's message (neutral/rewritten): "{rewritten_text}"
+- Ground-truth emotion to address: {emotion}
+- Ground-truth intent to address: {intent}
+- Ground-truth speech act to address: {speech_act}
 
 AI Assistant's response: "{response}"
 
@@ -50,11 +50,13 @@ Evaluate if the response appropriately acknowledges and addresses:
 2. The user's underlying intent ({intent})
 3. The speech act type ({speech_act})
 
+The assistant should respond appropriately to the EMOTION, INTENT, and SPEECH ACT described above, regardless of whether the message text itself appears emotional.
+
 Does this response appropriately address the user's communication? Answer with only true or false."""
 
 
 def create_evaluation_prompt(
-    original_utterance: str,
+    rewritten_text: str,
     response: str,
     emotion: str,
     intent: str,
@@ -63,7 +65,7 @@ def create_evaluation_prompt(
     """Create the evaluation prompt for a single response.
 
     Args:
-        original_utterance: The original user utterance
+        rewritten_text: The neutral/rewritten user utterance
         response: The AI assistant's response
         emotion: Detected emotion
         intent: Detected intent
@@ -73,7 +75,7 @@ def create_evaluation_prompt(
         Formatted evaluation prompt
     """
     return EVALUATION_PROMPT.format(
-        original_utterance=original_utterance,
+        rewritten_text=rewritten_text,
         response=response,
         emotion=emotion,
         intent=intent,
@@ -109,14 +111,14 @@ async def evaluate_single(
         }
 
     # Get metadata (handle different field names across steps)
-    original_utterance = item.get("original_utterance", "")
+    rewritten_text = item.get("rewritten_text", "")
     emotion = item.get("emotion", "")
     intent = item.get("intent", "")
     speech_act = item.get("speech_act", "")
 
     try:
         prompt = create_evaluation_prompt(
-            original_utterance=original_utterance,
+            rewritten_text=rewritten_text,
             response=response,
             emotion=emotion,
             intent=intent,
