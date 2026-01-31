@@ -1,0 +1,57 @@
+# Prosody Validation Benchmark Configuration
+# Copy this file to config.yaml and fill in your values
+
+# Directory paths (relative to benchmark/prosody_validation/)
+paths:
+  data_dir: "data"
+  outputs_dir: "outputs"
+  audio_dir: "outputs/audio"
+  responses_dir: "outputs/responses"
+
+# Model names
+models:
+  # Model for rewriting text to neutral form
+  rewrite_model: "google/gemini-2.5-flash"
+  
+  # Model for text-only baseline
+  text_model: "openai/gpt-4o-mini"
+  
+  # Multimodal model for end-to-end audio processing
+  e2e_model: "google/gemini-2.5-flash"
+
+# Batch processing settings
+batch_sizes:
+  tts: 10
+  whisper: 20
+
+# Concurrency settings
+concurrency:
+  max_concurrent_llm: 100
+  max_concurrent_tts: 5
+  max_concurrent_asr: 10
+
+# API settings
+api:
+  openrouter_api_key: "${OPENROUTER_API_KEY}"  # Set this in your environment
+  openrouter_base_url: "https://openrouter.ai/api/v1"
+
+# Qwen3-TTS settings (on GPU machine)
+qwen3_tts:
+  repo_path: null  # Path to Qwen3-TTS repo, e.g., "/path/to/Qwen3-TTS"
+  device: "cuda"   # "cuda" or "cpu"
+
+# Whisper ASR settings
+whisper:
+  model_size: "base"  # "tiny", "base", "small", "medium", "large"
+  device: "cpu"       # "cuda" or "cpu"
+  language: "en"      # Language code, null for auto-detection
+
+# Logging settings
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: "benchmark.log"
+
+# Sampling settings
+sampling:
+  n_samples: 200
+  random_state: 42
