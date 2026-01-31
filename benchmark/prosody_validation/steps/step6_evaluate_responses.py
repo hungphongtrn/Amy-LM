@@ -14,7 +14,7 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 
 # Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import get_config
 from src.utils import setup_logging, read_jsonl, write_jsonl, save_json
