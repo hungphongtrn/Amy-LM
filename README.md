@@ -2,6 +2,29 @@
 
 Data preparation pipeline for Amy-LM. The pipeline is designed to run on distributed machines (A, B, C, D) to parallelize heavy tasks.
 
+## Proactive-SAT Pipeline (Phase 1)
+
+Run the complete Phase 1 pipeline to produce a 200-sample HuggingFace dataset:
+
+```bash
+uv run python -m proactive_sat.data_pipeline.run_pipeline
+```
+
+### LLM Neutralization
+
+Use OpenAI for higher-quality text neutralization:
+
+```bash
+OPENAI_API_KEY=your_key_here uv run python -m proactive_sat.data_pipeline.run_pipeline --neutralizer openai
+```
+
+The `--neutralizer` option supports three modes:
+- `auto` (default): Uses OpenAI if `OPENAI_API_KEY` is set, otherwise falls back to rule-based neutralization
+- `openai`: Requires `OPENAI_API_KEY` environment variable
+- `rule_based`: Pattern-based neutralization using regex and heuristics (no API key required)
+
+Optional: Set `PROACTIVE_SAT_OPENAI_MODEL` to override the default model (`gpt-5-mini`).
+
 ## Installation
 
 This project uses `uv` for fast dependency management.
