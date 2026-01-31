@@ -6,11 +6,12 @@ import asyncio
 import base64
 import json
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Type, TypeVar
 from pathlib import Path
 
 import aiohttp
 from openai import AsyncOpenAI
+from pydantic import BaseModel
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -19,6 +20,8 @@ from tenacity import (
 )
 
 from .config import get_config
+
+T = TypeVar("T", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +227,75 @@ class OpenRouterClient:
                 results.append(response)
 
         return results
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
+    )
+    async def chat_structured(
+        self,
+        prompt: str,
+        model: str,
+        response_format: Type[T],
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 1024,
+    ) -> T:
+        """Send a text prompt and get structured output using JSON schema.
+
+        Args:
+            prompt: The user prompt
+            model: Model name to use (must support structured output)
+            response_format: Pydantic model class defining the output structure
+            system_prompt: Optional system prompt
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate
+
+        Returns:
+            Parsed Pydantic model instance
+        """
+        async with self.semaphore:
+            messages = []
+
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+
+            messages.append({"role": "user", "content": prompt})
+
+            try:
+                # Get JSON schema from Pydantic model
+                schema = response_format.model_json_schema()
+
+                response = await self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    timeout=60.0,
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": response_format.__name__,
+                            "schema": schema,
+                            "strict": True,
+                        },
+                    },
+                )
+
+                content = response.choices[0].message.content
+                logger.debug(f"Structured LLM response: {content[:100]}...")
+
+                # Parse JSON and validate with Pydantic
+                parsed_data = json.loads(content)
+                return response_format(**parsed_data)
+
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON response: {e}")
+                raise
+            except Exception as e:
+                logger.error(f"Error in chat_structured: {e}")
+                raise
 
 
 async def create_client() -> OpenRouterClient:
