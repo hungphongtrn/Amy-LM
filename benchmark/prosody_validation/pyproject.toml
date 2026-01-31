@@ -43,3 +43,9 @@ dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
 ]
+
+[tool.uv.extra-build-dependencies]
+flash-attn = [{ requirement = "torch", match-runtime = true }]
+
+[tool.uv.extra-build-variables]
+flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
