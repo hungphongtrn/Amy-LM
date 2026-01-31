@@ -218,7 +218,8 @@ def calculate_accuracy(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def run_evaluation(
+async def run_evaluation(
+    client: OpenRouterClient,
     input_path: Path,
     output_path: Path,
     model: str,
@@ -228,6 +229,7 @@ def run_evaluation(
     """Execute evaluation for a single pipeline.
 
     Args:
+        client: OpenRouter client
         input_path: Path to input JSONL file
         output_path: Path to save evaluation results
         model: Model to use for evaluation
@@ -260,23 +262,19 @@ def run_evaluation(
             write_jsonl([], output_path)
             return True
 
-        # Create client
-        client = OpenRouterClient()
-
         try:
             # Evaluate all items
-            results = asyncio.run(
-                evaluate_batch(
-                    client,
-                    successful_items,
-                    model,
-                    response_key,
-                    f"Evaluating {pipeline_name}",
-                )
+            results = await evaluate_batch(
+                client,
+                successful_items,
+                model,
+                response_key,
+                f"Evaluating {pipeline_name}",
             )
 
-        finally:
-            asyncio.run(client.close())
+        except Exception as e:
+            logger.error(f"Error during batch evaluation: {e}")
+            raise
 
         # Sort results by dialog_id
         results.sort(key=lambda x: x.get("dialog_id", ""))
@@ -305,7 +303,7 @@ def run_evaluation(
         return False
 
 
-def run_all_evaluations(
+async def run_all_evaluations(
     text_responses_path: Path,
     asr_responses_path: Path,
     e2e_responses_path: Path,
@@ -355,27 +353,35 @@ def run_all_evaluations(
     all_success = True
     all_metrics = {}
 
-    for pipeline in pipelines:
-        if not pipeline["input"].exists():
-            logger.warning(f"Input file not found: {pipeline['input']}")
-            all_success = False
-            continue
+    # Create client once for all evaluations
+    client = OpenRouterClient()
 
-        success = run_evaluation(
-            input_path=pipeline["input"],
-            output_path=pipeline["output"],
-            model=model,
-            response_key=pipeline["response_key"],
-            pipeline_name=pipeline["name"],
-        )
+    try:
+        for pipeline in pipelines:
+            if not pipeline["input"].exists():
+                logger.warning(f"Input file not found: {pipeline['input']}")
+                all_success = False
+                continue
 
-        if success:
-            # Load results and calculate metrics
-            results = read_jsonl(pipeline["output"])
-            metrics = calculate_accuracy(results)
-            all_metrics[pipeline["name"]] = metrics
-        else:
-            all_success = False
+            success = await run_evaluation(
+                client=client,
+                input_path=pipeline["input"],
+                output_path=pipeline["output"],
+                model=model,
+                response_key=pipeline["response_key"],
+                pipeline_name=pipeline["name"],
+            )
+
+            if success:
+                # Load results and calculate metrics
+                results = read_jsonl(pipeline["output"])
+                metrics = calculate_accuracy(results)
+                all_metrics[pipeline["name"]] = metrics
+            else:
+                all_success = False
+
+    finally:
+        await client.close()
 
     # Save summary report
     summary_path = output_dir / "evaluation_summary.json"
@@ -451,13 +457,15 @@ def main():
     # Setup logging
     setup_logging(args.log_level)
 
-    # Run all evaluations
-    success = run_all_evaluations(
-        text_responses_path=args.text_responses,
-        asr_responses_path=args.asr_responses,
-        e2e_responses_path=args.e2e_responses,
-        output_dir=args.output_dir,
-        model=args.model,
+    # Run all evaluations with a single event loop
+    success = asyncio.run(
+        run_all_evaluations(
+            text_responses_path=args.text_responses,
+            asr_responses_path=args.asr_responses,
+            e2e_responses_path=args.e2e_responses,
+            output_dir=args.output_dir,
+            model=args.model,
+        )
     )
 
     sys.exit(0 if success else 1)

@@ -4,7 +4,6 @@ Async OpenRouter Client for LLM API calls
 
 import asyncio
 import base64
-import json
 import logging
 from typing import Optional, Dict, Any, List, Type, TypeVar
 from pathlib import Path
@@ -17,6 +16,7 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
     retry_if_exception_type,
+    before_sleep_log,
 )
 
 from .config import get_config
@@ -232,6 +232,7 @@ class OpenRouterClient:
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
     )
     async def chat_structured(
         self,
@@ -264,38 +265,45 @@ class OpenRouterClient:
             messages.append({"role": "user", "content": prompt})
 
             try:
-                # Get JSON schema from Pydantic model
-                schema = response_format.model_json_schema()
-
-                response = await self.client.chat.completions.create(
+                response = await self.client.beta.chat.completions.parse(
                     model=model,
                     messages=messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     timeout=60.0,
-                    response_format={
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": response_format.__name__,
-                            "schema": schema,
-                            "strict": True,
-                        },
-                    },
+                    response_format=response_format,  # Pass Pydantic model directly
                 )
 
-                content = response.choices[0].message.content
-                logger.debug(f"Structured LLM response: {content[:100]}...")
+                message = response.choices[0].message
 
-                # Parse JSON and validate with Pydantic
-                parsed_data = json.loads(content)
-                return response_format(**parsed_data)
+                if message.parsed:
+                    return message.parsed
+                elif message.refusal:
+                    # Handle refusal by returning default instance
+                    logger.warning(
+                        f"LLM refused to respond, returning default instance for {response_format.__name__}"
+                    )
+                    return response_format(
+                        approved=False,
+                        evaluation_rationale=f"LLM refused: {message.refusal[:200]}",
+                    )
+                else:
+                    # No parsed content and no refusal - unexpected state
+                    logger.warning(
+                        f"No parsed content or refusal, returning default instance for {response_format.__name__}"
+                    )
+                    return response_format(
+                        approved=False,
+                        evaluation_rationale="No structured output received",
+                    )
 
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse JSON response: {e}")
-                raise
             except Exception as e:
                 logger.error(f"Error in chat_structured: {e}")
-                raise
+                # Return a default instance instead of crashing
+                return response_format(
+                    approved=False,
+                    evaluation_rationale=f"Error: {str(e)[:100]}",
+                )
 
 
 async def create_client() -> OpenRouterClient:
