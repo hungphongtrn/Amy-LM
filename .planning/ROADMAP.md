@@ -18,7 +18,7 @@ flowchart LR
 - Integer phases (1, 2, 3): Planned milestone work
 - Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
 
-- [ ] **Phase 1: Data Pipeline** - Turn `.data/` into a 200-sample HF dataset with neutralized text and prosody instructions
+- [x] **Phase 1: Data Pipeline** - Turn `.data/` into a 200-sample HF dataset with neutralized text and prosody instructions (Completed: 2026-01-31)
 - [ ] **Phase 2: Speech Synthesis** - Generate Control vs Trigger audio variants for the dataset using Qwen3-TTS
 - [ ] **Phase 3: Benchmark Evaluation** - Run the three model tracks on both benchmark tasks and capture per-sample outputs
 - [ ] **Phase 4: Results & Visualization** - Export benchmark results JSON and produce comparison charts
@@ -37,9 +37,9 @@ flowchart LR
 **Plans**: 3 plans
 
 Plans:
-- [ ] 01-01: Parse `.data/` into canonical sample schema
-- [ ] 01-02: Lexical neutralizer + speaker-instruction generation
-- [ ] 01-03: Build/export HF dataset (200 samples; control/trigger fields)
+- [x] 01-01: Parse `.data/` into canonical sample schema (Completed: 2026-01-31)
+- [x] 01-02: Lexical neutralizer + speaker-instruction generation (Completed: 2026-01-31)
+- [x] 01-03: Build/export HF dataset (200 samples; control/trigger fields) (Completed: 2026-01-31)
 
 ### Phase 2: Speech Synthesis
 **Goal**: Users can generate paired Control and Trigger audio for every dataset item
@@ -115,7 +115,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Data Pipeline | 0/3 | Not started | - |
+| 1. Data Pipeline | 3/3 | ✓ Complete | 2026-01-31 |
 | 2. Speech Synthesis | 0/3 | Not started | - |
 | 3. Benchmark Evaluation | 0/3 | Not started | - |
 | 4. Results & Visualization | 0/2 | Not started | - |

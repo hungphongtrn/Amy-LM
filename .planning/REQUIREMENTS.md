@@ -9,10 +9,10 @@ Requirements for initial MVP (200 samples, 1-day timeline).
 
 ### Data Pipeline
 
-- [ ] **DATA-01**: Load and parse source data from `.data/` directory
-- [ ] **DATA-02**: Build Lexical Neutralizer to rewrite utterances with neutral text
-- [ ] **DATA-03**: Generate Speaker Instructions for prosodic injection (sarcastic, frustrated, distressed)
-- [ ] **DATA-04**: Create HuggingFace dataset with 200 samples (Control + Trigger variants)
+- [x] **DATA-01**: Load and parse source data from `.data/` directory (Completed: 2026-01-31)
+- [x] **DATA-02**: Build Lexical Neutralizer to rewrite utterances with neutral text (Completed: 2026-01-31)
+- [x] **DATA-03**: Generate Speaker Instructions for prosodic injection (sarcastic, frustrated, distressed) (Completed: 2026-01-31)
+- [x] **DATA-04**: Create HuggingFace dataset with 200 samples (Control + Trigger variants) (Completed: 2026-01-31)
 
 ### Speech Synthesis
 
@@ -64,10 +64,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DATA-01 | Phase 1 | Pending |
-| DATA-02 | Phase 1 | Pending |
-| DATA-03 | Phase 1 | Pending |
-| DATA-04 | Phase 1 | Pending |
+| DATA-01 | Phase 1 | ✓ Complete |
+| DATA-02 | Phase 1 | ✓ Complete |
+| DATA-03 | Phase 1 | ✓ Complete |
+| DATA-04 | Phase 1 | ✓ Complete |
 | TTS-01 | Phase 2 | Pending |
 | TTS-02 | Phase 2 | Pending |
 | TTS-03 | Phase 2 | Pending |
