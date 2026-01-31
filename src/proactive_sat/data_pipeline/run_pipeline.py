@@ -9,6 +9,7 @@ Produces a 200-sample HuggingFace dataset from source data files.
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -60,12 +61,22 @@ def run_pipeline(
 
     # Step 2: Enrich samples
     print("Step 2: Enriching samples with neutralization and prosody instructions...")
+
+    # Resolve auto mode to actual neutralizer
+    resolved_neutralizer = neutralizer
+    if neutralizer == "auto":
+        if os.environ.get("OPENAI_API_KEY"):
+            resolved_neutralizer = "openai"
+        else:
+            resolved_neutralizer = "rule_based"
+        print(f"  Neutralizer: {resolved_neutralizer} (auto-resolved)")
+
     enriched_out = Path(".data/proactive_sat/enriched_samples.jsonl")
     enrich_rows, enrich_stats = enrich_samples(
         in_path=raw_out,
         out_path=enriched_out,
         limit=limit,
-        neutralizer=neutralizer,
+        neutralizer=resolved_neutralizer,
     )
     stats["enrich"] = enrich_stats
     print(f"  Enriched {enrich_stats['enriched_samples']} samples")
@@ -104,9 +115,9 @@ def main():
     # Enrichment options
     parser.add_argument(
         "--neutralizer",
-        choices=["rule_based", "openai"],
-        default="rule_based",
-        help="Neutralization mode (default: rule_based)",
+        choices=["rule_based", "openai", "auto"],
+        default="auto",
+        help="Neutralization mode: 'rule_based' (default, no API key), 'openai' (requires OPENAI_API_KEY), 'auto' (uses openai if key set, otherwise rule_based)",
     )
 
     # Dataset build options
