@@ -34,12 +34,14 @@ flowchart LR
   2. User can inspect any sample and see both original text and a lexical-neutralized transcript
   3. User can inspect any sample and see generated speaker instructions for prosodic injection (e.g., sarcastic/frustrated/distressed)
   4. User can load a HuggingFace dataset with exactly 200 samples that includes Control/Trigger variant metadata
-**Plans**: 3 plans
+**Plans**: 5 plans (including 2 gap closure)
 
 Plans:
 - [x] 01-01: Parse `.data/` into canonical sample schema (Completed: 2026-01-31)
 - [x] 01-02: Lexical neutralizer + speaker-instruction generation (Completed: 2026-01-31)
 - [x] 01-03: Build/export HF dataset (200 samples; control/trigger fields) (Completed: 2026-01-31)
+- [x] 01-04: Package Importability - Fix ModuleNotFoundError via src-layout (Gap closure; Completed: 2026-01-31)
+- [x] 01-05: LLM Neutralizer Discoverability - Auto mode + CLI help + docs (Gap closure; Completed: 2026-01-31)
 
 ### Phase 2: Speech Synthesis
 **Goal**: Users can generate paired Control and Trigger audio for every dataset item
