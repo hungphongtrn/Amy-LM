@@ -36,6 +36,9 @@ dependencies = [
     
     # TTS
     "qwen-tts>=0.1.0",
+    
+    # Attention
+    "flash-attn",
 ]
 
 [project.optional-dependencies]
