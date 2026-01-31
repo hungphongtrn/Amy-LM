@@ -33,6 +33,9 @@ dependencies = [
     
     # Retry logic
     "tenacity>=8.2.0",
+    
+    # TTS
+    "qwen-tts>=0.1.0",
 ]
 
 [project.optional-dependencies]

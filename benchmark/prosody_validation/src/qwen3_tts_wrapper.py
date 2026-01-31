@@ -1,5 +1,5 @@
 """
-Qwen3-TTS Wrapper for speech generation with prosody control
+Qwen3-TTS Wrapper for speech generation with prosody control using qwen-tts library
 """
 
 import asyncio
@@ -9,11 +9,15 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 from tqdm.asyncio import tqdm_asyncio
 
+import torch
+import soundfile as sf
+from qwen_tts import Qwen3TTSModel
+
 logger = logging.getLogger(__name__)
 
 
 class Qwen3TTSWrapper:
-    """Wrapper for Qwen3-TTS speech generation with prosody guidance."""
+    """Wrapper for Qwen3-TTS speech generation with prosody guidance using qwen-tts library."""
 
     def __init__(
         self,
@@ -24,35 +28,14 @@ class Qwen3TTSWrapper:
         """Initialize the Qwen3-TTS wrapper.
 
         Args:
-            repo_path: Path to the Qwen3-TTS repository (defaults to config)
+            repo_path: Path to the Qwen3-TTS model (defaults to Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice)
             device: Device to run inference on ('cuda' or 'cpu')
             batch_size: Number of texts to process in a batch
         """
-        self.repo_path = repo_path
+        self.repo_path = repo_path or "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
         self.device = device
         self.batch_size = batch_size
         self.model = None
-        self.processor = None
-
-        # Try to import Qwen3-TTS dependencies
-        self._check_dependencies()
-
-    def _check_dependencies(self) -> bool:
-        """Check if Qwen3-TTS dependencies are available.
-
-        Returns:
-            True if dependencies are available, False otherwise
-        """
-        try:
-            import torch
-            from transformers import AutoProcessor, AutoModelForTextToWaveform
-
-            logger.info("Qwen3-TTS dependencies found")
-            return True
-        except ImportError as e:
-            logger.warning(f"Qwen3-TTS dependencies not available: {e}")
-            logger.info("Install with: pip install torch transformers")
-            return False
 
     async def load_model(self) -> bool:
         """Load the Qwen3-TTS model.
@@ -61,34 +44,30 @@ class Qwen3TTSWrapper:
             True if model loaded successfully, False otherwise
         """
         try:
-            if not self._check_dependencies():
-                logger.error("Qwen3-TTS dependencies not available")
-                return False
-
-            import torch
-            from transformers import AutoProcessor, AutoModelForTextToWaveform
-
-            logger.info(f"Loading Qwen3-TTS model on {self.device}...")
-
-            # Use default model if not specified
-            model_id = self.repo_path or "Qwen/Qwen3-TTS"
-
-            self.processor = AutoProcessor.from_pretrained(model_id)
-            self.model = AutoModelForTextToWaveform.from_pretrained(
-                model_id,
-                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
-                device_map=self.device if self.device == "cuda" else None,
+            logger.info(
+                f"Loading Qwen3-TTS model from {self.repo_path} on {self.device}..."
             )
 
-            if self.device == "cpu":
-                self.model = self.model.to(self.device)
+            # Map device string to device_map format
+            device_map = self.device if self.device.startswith("cuda") else "cpu"
 
-            self.model.eval()
+            self.model = Qwen3TTSModel.from_pretrained(
+                self.repo_path,
+                device_map=device_map,
+                dtype=torch.bfloat16 if self.device == "cuda" else torch.float32,
+                attn_implementation="flash_attention_2"
+                if self.device == "cuda"
+                else "eager",
+            )
+
             logger.info("Qwen3-TTS model loaded successfully")
             return True
 
         except Exception as e:
             logger.error(f"Failed to load Qwen3-TTS model: {e}")
+            import traceback
+
+            traceback.print_exc()
             return False
 
     def generate_prosody_instruction(
@@ -109,29 +88,31 @@ class Qwen3TTSWrapper:
 
         # Prosody mappings based on emotion
         prosody_map = {
-            "angry": "firm and agitated tone",
-            "frustrated": "impatient and irritated tone",
-            "annoyed": "slightly irritated tone",
-            "excited": "energetic and enthusiastic tone",
-            "happy": "cheerful and warm tone",
-            "sad": "soft and melancholic tone",
-            "anxious": "nervous and rushed tone",
-            "neutral": "calm and neutral tone",
-            "positive": "warm and friendly tone",
-            "negative": "cold and distant tone",
+            "angry": "用愤怒的语气说",
+            "frustrated": "用沮丧的语气说",
+            "annoyed": "用恼怒的语气说",
+            "excited": "用兴奋的语气说",
+            "happy": "用开心的语气说",
+            "sad": "用悲伤的语气说",
+            "anxious": "用焦虑的语气说",
+            "neutral": "用中性的语气说",
+            "positive": "用积极的语气说",
+            "negative": "用消极的语气说",
         }
 
-        prosody = prosody_map.get(emotion_lower, "calm and neutral tone")
+        prosody = prosody_map.get(emotion_lower, "用中性的语气说")
 
-        # Build instruction
-        instruction = (
-            f"Speak with a {prosody}. This is a {speech_act} expressing {intent}."
-        )
+        # Build instruction in Chinese for better compatibility with Qwen3-TTS
+        instruction = f"{prosody}。这是一个{speech_act}，表达{intent}的意图。"
 
         return instruction
 
     async def generate_speech(
-        self, text: str, prosody_instruction: str, output_path: Path
+        self,
+        text: str,
+        prosody_instruction: str,
+        output_path: Path,
+        language: str = "Auto",
     ) -> bool:
         """Generate speech from text with prosody guidance.
 
@@ -139,50 +120,31 @@ class Qwen3TTSWrapper:
             text: Text to synthesize
             prosody_instruction: Prosody guidance instruction
             output_path: Path to save the generated audio
+            language: Language code (default: "Auto" for auto-detection)
 
         Returns:
             True if successful, False otherwise
         """
         try:
-            import torch
-            from transformers import AutoProcessor, AutoModelForTextToWaveform
-
-            # Prepare input
-            messages = [{"role": "user", "content": f"{prosody_instruction}\n\n{text}"}]
-
-            text_input = self.processor.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
+            # Use default speaker and apply prosody instruction
+            wavs, sr = self.model.generate_custom_voice(
+                text=text,
+                language=language,
+                speaker="Vivian",  # Default speaker
+                instruct=prosody_instruction if prosody_instruction else None,
             )
 
-            inputs = self.processor(
-                text=[text_input],
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=512,
-            )
-
-            if self.device == "cuda":
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
-
-            # Generate speech
-            with torch.no_grad():
-                audio = self.model.generate(**inputs)
-
-            # Normalize and save audio
-            audio = audio.float()  # Convert to float if needed
-            audio = audio / max(audio.abs().max(), 1e-8)  # Normalize
-
-            # Save as WAV
-            import soundfile as sf
-
-            sf.write(str(output_path), audio.cpu().numpy(), 22050)
+            # Save audio
+            sf.write(str(output_path), wavs[0], sr)
 
             logger.debug(f"Generated speech: {output_path}")
             return True
 
         except Exception as e:
             logger.error(f"Error generating speech: {e}")
+            import traceback
+
+            traceback.print_exc()
             return False
 
     async def generate_batch(
@@ -300,12 +262,8 @@ class Qwen3TTSWrapper:
     def unload_model(self) -> None:
         """Unload the model to free memory."""
         if self.model:
-            import torch
-
             del self.model
-            del self.processor
             self.model = None
-            self.processor = None
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
