@@ -14,7 +14,6 @@ dependencies = [
     "python-dotenv>=1.0.0",
     
     # ASR - Whisper (HuggingFace Transformers for batching support)
-    "openai-whisper>=20231117",  # Fallback
     "torch>=2.0.0",
     "torchaudio>=2.0.0",
     "transformers>=4.35.0",  # HuggingFace Transformers for pipeline batching

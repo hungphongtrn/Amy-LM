@@ -1,6 +1,5 @@
 """
 Whisper ASR Wrapper using HuggingFace Transformers pipeline for ASR batching support.
-Refactored from openai-whisper to HuggingFace Transformers for better batching capabilities.
 """
 
 import asyncio
@@ -476,33 +475,14 @@ class WhisperWrapper:
                 torch_dtype=torch_dtype,
             )
 
-    def _check_dependencies(self) -> bool:
-        """Check if whisper dependencies are available.
-
-        Returns:
-            True if dependencies are available, False otherwise
-        """
-        try:
-            import whisper
-            import torch
-
-            logger.info("OpenAI Whisper dependencies found")
-            return True
-        except ImportError:
-            logger.warning(
-                "OpenAI Whisper not available, using HuggingFace Transformers"
-            )
-            return False
-
     def load_model(self) -> bool:
         """Load the Whisper model.
 
         Returns:
             True if model loaded successfully, False otherwise
         """
-        # Try HuggingFace first (preferred)
         try:
-            logger.info("Attempting to load HuggingFace Transformers Whisper...")
+            logger.info("Loading HuggingFace Transformers Whisper...")
             self.hf_wrapper = self.__create_hf_wrapper()
             if self.hf_wrapper.load_model():
                 self.use_hf = True
@@ -510,38 +490,9 @@ class WhisperWrapper:
                 return True
             self.hf_wrapper = None
         except Exception as e:
-            logger.warning(f"Failed to load HuggingFace Whisper: {e}")
+            logger.error(f"Failed to load HuggingFace Whisper: {e}")
 
-        # Fallback to openai-whisper if available
-        if self._check_dependencies():
-            logger.info("Falling back to openai-whisper...")
-            return self._load_whisper_model()
-
-        logger.error("No Whisper backend available")
         return False
-
-    def _load_whisper_model(self) -> bool:
-        """Load the OpenAI Whisper model.
-
-        Returns:
-            True if model loaded successfully, False otherwise
-        """
-        try:
-            import whisper
-
-            logger.info(
-                f"Loading Whisper '{self.model_size}' model on {self.device}..."
-            )
-
-            self.model = whisper.load_model(self.model_size, device=self.device)
-            self.use_hf = False
-
-            logger.info("OpenAI Whisper model loaded successfully")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to load Whisper model: {e}")
-            return False
 
     def transcribe_audio(
         self, audio_path: Path, verbose: bool = False
@@ -558,61 +509,11 @@ class WhisperWrapper:
         if self.use_hf and self.hf_wrapper:
             return self.hf_wrapper.transcribe_audio(audio_path, verbose)
 
-        # Fallback to openai-whisper
-        return self._transcribe_audio_whisper(audio_path, verbose)
-
-    def _transcribe_audio_whisper(
-        self, audio_path: Path, verbose: bool = False
-    ) -> Dict[str, Any]:
-        """Transcribe a single audio file using openai-whisper.
-
-        Args:
-            audio_path: Path to the audio file
-            verbose: Whether to print verbose output
-
-        Returns:
-            Dictionary containing transcription results
-        """
-        try:
-            import whisper
-            import torch
-
-            if not getattr(self, "model", None):
-                if not self.load_model():
-                    return {
-                        "success": False,
-                        "error": "Model not loaded",
-                        "audio_path": str(audio_path),
-                    }
-
-            # Ensure audio path exists
-            if not audio_path.exists():
-                return {
-                    "success": False,
-                    "error": "Audio file not found",
-                    "audio_path": str(audio_path),
-                }
-
-            # Transcribe audio
-            options = {
-                "language": self.language,
-                "verbose": verbose,
-                "fp16": torch.cuda.is_available() and self.device == "cuda",
-            }
-
-            result = self.model.transcribe(str(audio_path), **options)
-
-            return {
-                "success": True,
-                "text": result.get("text", "").strip(),
-                "audio_path": str(audio_path),
-                "language": result.get("language", self.language),
-                "duration": result.get("duration", 0),
-            }
-
-        except Exception as e:
-            logger.error(f"Error transcribing {audio_path}: {e}")
-            return {"success": False, "error": str(e), "audio_path": str(audio_path)}
+        return {
+            "success": False,
+            "error": "HuggingFace wrapper not available",
+            "audio_path": str(audio_path),
+        }
 
     async def transcribe_batch(
         self, audio_paths: List[Path], progress_desc: str = "Transcribing audio"
@@ -629,53 +530,8 @@ class WhisperWrapper:
         if self.use_hf and self.hf_wrapper:
             return await self.hf_wrapper.transcribe_batch(audio_paths, progress_desc)
 
-        # Fallback to openai-whisper
-        return await self._transcribe_batch_whisper(audio_paths, progress_desc)
-
-    async def _transcribe_batch_whisper(
-        self, audio_paths: List[Path], progress_desc: str = "Transcribing audio"
-    ) -> List[Dict[str, Any]]:
-        """Transcribe a batch of audio files using openai-whisper.
-
-        Args:
-            audio_paths: List of paths to audio files
-            progress_desc: Description for progress bar
-
-        Returns:
-            List of transcription results
-        """
-        if not getattr(self, "model", None):
-            if not self.load_model():
-                logger.error("Failed to load Whisper model")
-                return []
-
-        results = []
-
-        # Create progress bar
-        progress_bar = tqdm_asyncio(
-            total=len(audio_paths), desc=progress_desc, unit="files"
-        )
-
-        for audio_path in audio_paths:
-            result = self._transcribe_audio_whisper(audio_path)
-            results.append(result)
-
-            if result["success"]:
-                logger.debug(f"Transcribed: {audio_path} -> {result['text'][:50]}...")
-            else:
-                logger.warning(f"Failed to transcribe: {audio_path}")
-
-            progress_bar.update(1)
-
-        progress_bar.close()
-
-        # Log summary
-        success_count = sum(1 for r in results if r["success"])
-        logger.info(
-            f"Transcribed {success_count}/{len(results)} audio files successfully"
-        )
-
-        return results
+        logger.error("HuggingFace wrapper not available")
+        return []
 
     async def transcribe_from_manifest(
         self, manifest_path: Path
@@ -711,16 +567,6 @@ class WhisperWrapper:
         if self.use_hf and self.hf_wrapper:
             self.hf_wrapper.unload_model()
             self.hf_wrapper = None
-        elif getattr(self, "model", None):
-            import torch
-
-            del self.model
-            self.model = None
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-            logger.info("Whisper model unloaded")
 
 
 def create_whisper_wrapper(
@@ -746,10 +592,7 @@ if __name__ == "__main__":
         wrapper = create_whisper_wrapper()
         if wrapper.load_model():
             print("Whisper wrapper initialized successfully")
-            if wrapper.use_hf:
-                print("Using HuggingFace Transformers backend")
-            else:
-                print("Using openai-whisper backend")
+            print("Using HuggingFace Transformers backend")
             wrapper.unload_model()
             return True
         else:
