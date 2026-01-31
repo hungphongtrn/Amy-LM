@@ -129,12 +129,13 @@ async def evaluate_single(
             model=model,
             response_format=Appropriate,
             temperature=0.0,  # Deterministic for evaluation
-            max_tokens=100,
+            max_tokens=1024,
         )
 
         return {
             **item,
             "evaluation_approved": evaluation_result.approved,
+            "evaluation_rationale": evaluation_result.evaluation_rationale,
             "evaluation_error": None,
         }
 
