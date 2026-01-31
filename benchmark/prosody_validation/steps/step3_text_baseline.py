@@ -19,9 +19,9 @@ from src.openrouter_client import OpenRouterClient
 logger = logging.getLogger(__name__)
 
 # Response prompt template
-RESPONSE_PROMPT = """User says: "{rewritten_text}"
+RESPONSE_PROMPT = """You are having a conversation with someone. They say: "{rewritten_text}"
 
-How would you respond? What do you think they mean?"""
+Respond naturally as if you're talking to them directly. Show that you understand how they feel and what they're trying to communicate."""
 
 
 def create_response_prompt(rewritten_text: str) -> str:

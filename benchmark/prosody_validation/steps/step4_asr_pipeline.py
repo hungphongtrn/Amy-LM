@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 ASR_PROMPT = """You heard someone say: "{transcription}"
 
-How would you respond? What do you think they mean?"""
+Respond naturally as if you're talking to them directly. Show that you understand how they feel and what they're trying to communicate."""
 
 
 def create_asr_prompt(transcription: str) -> str:
@@ -236,7 +236,9 @@ async def llm_stage(
     tasks = [asyncio.create_task(_one(it)) for it in items]
 
     results: List[Dict[str, Any]] = []
-    for t in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc=progress_desc, unit="files"):
+    for t in tqdm(
+        asyncio.as_completed(tasks), total=len(tasks), desc=progress_desc, unit="files"
+    ):
         results.append(await t)
     return results
 
@@ -300,7 +302,9 @@ def run_step4(
 
         asr_pipe = load_whisper_pipe(model_id=model_id, asr_batch_size=asr_batch_size)
 
-        transcription_results = transcribe_all_audio(asr_pipe=asr_pipe, audio_paths=audio_paths)
+        transcription_results = transcribe_all_audio(
+            asr_pipe=asr_pipe, audio_paths=audio_paths
+        )
 
         # Cleanup to free memory for LLM stage (optional but helpful on smaller GPUs)
         del asr_pipe
@@ -308,7 +312,9 @@ def run_step4(
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
 
-        transcriptions_by_path = _build_results_from_transcriptions(transcription_results)
+        transcriptions_by_path = _build_results_from_transcriptions(
+            transcription_results
+        )
 
         # ---- Stage 2 (ASYNC): LLM responses ----
         openrouter_client = OpenRouterClient()
@@ -327,7 +333,9 @@ def run_step4(
         write_jsonl(results, output_path)
         logger.info(f"Saved {len(results)} ASR responses to {output_path}")
 
-        transcription_success = sum(1 for r in results if r.get("transcription_success"))
+        transcription_success = sum(
+            1 for r in results if r.get("transcription_success")
+        )
         asr_success = sum(1 for r in results if r.get("asr_success"))
         logger.info(f"Transcription success: {transcription_success}/{len(results)}")
         logger.info(f"ASR pipeline success: {asr_success}/{len(results)}")
@@ -357,7 +365,10 @@ def main():
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path(__file__).parent.parent / "outputs" / "responses" / "step4_asr_responses.jsonl",
+        default=Path(__file__).parent.parent
+        / "outputs"
+        / "responses"
+        / "step4_asr_responses.jsonl",
         help="Path to output JSONL file",
     )
     parser.add_argument(

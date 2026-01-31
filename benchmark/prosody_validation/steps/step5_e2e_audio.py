@@ -19,9 +19,9 @@ logger = logging.getLogger(__name__)
 
 
 # E2E audio prompt template
-E2E_PROMPT = """Listen to this audio recording.
+E2E_PROMPT = """Listen carefully to this audio recording. Pay attention to how the person sounds - their tone, emotion, and delivery.
 
-How would you respond to this person? What are they trying to communicate?"""
+Respond naturally as if you're talking to them directly. Show that you understand how they feel and what they're trying to communicate."""
 
 
 def create_e2e_prompt() -> str:
@@ -103,10 +103,7 @@ async def process_e2e_batch(
 
     sem = asyncio.Semaphore(concurrency)
 
-    tasks = [
-        process_single_e2e(client, item, model, semaphore=sem)
-        for item in items
-    ]
+    tasks = [process_single_e2e(client, item, model, semaphore=sem) for item in items]
 
     # tqdm_asyncio.gather shows a progress bar and awaits all tasks
     results = await tqdm_asyncio.gather(*tasks, desc=progress_desc, unit="files")
@@ -165,8 +162,12 @@ async def run_step5_async(
         for result in results[:3]:
             if result.get("success"):
                 logger.info(f"  [{result.get('dialog_id')}]")
-                logger.info(f"    Original: {result.get('original_utterance', '')[:80]}...")
-                logger.info(f"    E2E Response: {str(result.get('e2e_response', ''))[:80]}...")
+                logger.info(
+                    f"    Original: {result.get('original_utterance', '')[:80]}..."
+                )
+                logger.info(
+                    f"    E2E Response: {str(result.get('e2e_response', ''))[:80]}..."
+                )
 
         logger.info("=" * 60)
         logger.info("STEP 5 COMPLETED SUCCESSFULLY")
@@ -177,6 +178,7 @@ async def run_step5_async(
     except Exception as e:
         logger.error(f"Step 5 failed: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -202,7 +204,10 @@ def main():
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path(__file__).parent.parent / "outputs" / "responses" / "step5_e2e_responses.jsonl",
+        default=Path(__file__).parent.parent
+        / "outputs"
+        / "responses"
+        / "step5_e2e_responses.jsonl",
         help="Path to output JSONL file",
     )
     parser.add_argument(
