@@ -28,7 +28,12 @@ Original: {original}
 Emotion: {emotion}
 Intent: {intent}
 
-Rewritten:"""
+RULES:
+- Output ONLY the rewritten sentence
+- NO prefixes like "Rewritten:" or "Here is:"
+- NO explanations or multiple options
+- NO quotation marks around the output
+- Just the plain rewritten text"""
 
 
 def create_rewrite_prompt(original: str, emotion: str, intent: str) -> str:
@@ -71,8 +76,37 @@ async def rewrite_single(
             prompt=prompt, model=model, temperature=0.3, max_tokens=256
         )
 
-        # Clean up the response (remove any quotes or extra whitespace)
-        rewritten = rewritten.strip().strip('"').strip("'").strip()
+        # Clean up the response - remove prefixes, quotes, and take first line only
+        rewritten = rewritten.strip()
+
+        # Remove common prefixes
+        prefixes = [
+            "rewritten:",
+            "rewritten text:",
+            "here is:",
+            "here is the rewritten text:",
+            "result:",
+            "output:",
+            "neutral version:",
+            "positive version:",
+            "option 1:",
+            "1.",
+            "1)",
+            "- ",
+            "* ",
+        ]
+        lower = rewritten.lower()
+        for prefix in prefixes:
+            if lower.startswith(prefix):
+                rewritten = rewritten[len(prefix) :].strip()
+                lower = rewritten.lower()
+
+        # Remove quotes and extra whitespace
+        rewritten = rewritten.strip('"').strip("'").strip()
+
+        # If multiple lines, take only the first one (ignore explanations/options)
+        if "\n" in rewritten:
+            rewritten = rewritten.split("\n")[0].strip()
 
         return {**item, "rewritten_text": rewritten}
 
