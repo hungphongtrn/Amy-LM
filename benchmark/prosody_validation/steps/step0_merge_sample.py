@@ -257,9 +257,7 @@ def main():
     parser.add_argument(
         "--input",
         type=Path,
-        default=Path(__file__).parent.parent.parent.parent
-        / "data"
-        / "merged_dataset.csv",
+        default=Path(__file__).parent.parent / "merged_dataset.csv",
         help="Path to merged dataset CSV file",
     )
     parser.add_argument(
