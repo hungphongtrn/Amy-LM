@@ -1,12 +1,15 @@
 """
-Step 0: Merge Annotation and Dialogue data, then sample 200 rows
+Step 0: Load merged dataset and sample 200 rows
+
+This step works directly with the pre-merged dataset that contains
+both utterances and annotations.
 """
 
 import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List
 
 import pandas as pd
 import numpy as np
@@ -21,88 +24,20 @@ from src.utils import setup_logging, write_csv
 logger = logging.getLogger(__name__)
 
 
-def load_annotation_data(file_path: Path) -> pd.DataFrame:
-    """Load the annotation CSV file.
+def load_merged_data(file_path: Path) -> pd.DataFrame:
+    """Load the pre-merged dataset CSV.
 
     Args:
-        file_path: Path to the annotation CSV
+        file_path: Path to the merged dataset CSV
 
     Returns:
-        DataFrame with annotation data
+        DataFrame with all data (utterance + annotations)
     """
-    logger.info(f"Loading annotation data from {file_path}")
+    logger.info(f"Loading merged dataset from {file_path}")
     df = pd.read_csv(file_path)
-    logger.info(f"Loaded {len(df)} annotation rows")
-    logger.info(f"Annotation columns: {list(df.columns)}")
+    logger.info(f"Loaded {len(df)} rows")
+    logger.info(f"Columns: {list(df.columns)}")
     return df
-
-
-def load_dialogue_data(file_path: Path) -> pd.DataFrame:
-    """Load the dialogue TSV file.
-
-    Args:
-        file_path: Path to the dialogue TSV
-
-    Returns:
-        DataFrame with dialogue data
-    """
-    logger.info(f"Loading dialogue data from {file_path}")
-    df = pd.read_csv(file_path, sep="\t")
-    logger.info(f"Loaded {len(df)} dialogue rows")
-    logger.info(f"Dialogue columns: {list(df.columns)}")
-    return df
-
-
-def merge_data(annotation_df: pd.DataFrame, dialogue_df: pd.DataFrame) -> pd.DataFrame:
-    """Merge annotation and dialogue data on dialog_id.
-
-    Args:
-        annotation_df: Annotation DataFrame
-        dialogue_df: Dialogue DataFrame
-
-    Returns:
-        Merged DataFrame
-    """
-    # Check for dialog_id columns
-    annotation_id_col = "dialog_id" if "dialog_id" in annotation_df.columns else None
-    dialogue_id_col = "dialog_id" if "dialog_id" in dialogue_df.columns else None
-
-    if not annotation_id_col or not dialogue_id_col:
-        # Try to find the ID column
-        possible_ids = ["dialog_id", "id", "Dialog_ID", "ID", "dialog"]
-        for pid in possible_ids:
-            if pid in annotation_df.columns:
-                annotation_id_col = pid
-                break
-        for pid in possible_ids:
-            if pid in dialogue_df.columns:
-                dialogue_id_col = pid
-                break
-
-    if not annotation_id_col or not dialogue_id_col:
-        logger.error("Could not find dialog_id column")
-        raise ValueError("Could not find dialog_id column in either file")
-
-    logger.info(
-        f"Using '{annotation_id_col}' for annotation and '{dialogue_id_col}' for dialogue"
-    )
-
-    # Rename columns to standardize
-    annotation_df = annotation_df.rename(columns={annotation_id_col: "dialog_id"})
-    dialogue_df = dialogue_df.rename(columns={dialogue_id_col: "dialog_id"})
-
-    # Merge on dialog_id
-    merged_df = pd.merge(
-        dialogue_df,
-        annotation_df,
-        on="dialog_id",
-        how="inner",
-        suffixes=("_dialogue", "_annotation"),
-    )
-
-    logger.info(f"Merged data: {len(merged_df)} rows")
-
-    return merged_df
 
 
 def filter_implicature(df: pd.DataFrame) -> pd.DataFrame:
@@ -114,16 +49,10 @@ def filter_implicature(df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         Filtered DataFrame
     """
-    # Check for implicature_text column
-    implicature_col = None
-    possible_cols = ["implicature_text", "implicature", "Implicature"]
-    for col in possible_cols:
-        if col in df.columns:
-            implicature_col = col
-            break
+    implicature_col = "implicature_text"
 
-    if not implicature_col:
-        logger.warning("Could not find implicature_text column, skipping filter")
+    if implicature_col not in df.columns:
+        logger.warning(f"Column '{implicature_col}' not found, skipping filter")
         return df
 
     logger.info(f"Filtering for non-empty '{implicature_col}'")
@@ -265,17 +194,15 @@ def select_output_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def run_step0(
-    annotation_path: Path,
-    dialogue_path: Path,
+    input_path: Path,
     output_path: Path,
     n_samples: int = 200,
     random_state: int = 42,
 ) -> bool:
-    """Execute Step 0: Merge and sample data.
+    """Execute Step 0: Load merged data and sample.
 
     Args:
-        annotation_path: Path to the annotation CSV
-        dialogue_path: Path to the dialogue TSV
+        input_path: Path to the merged dataset CSV
         output_path: Path to save the sampled data
         n_samples: Number of samples to select
         random_state: Random seed
@@ -284,19 +211,15 @@ def run_step0(
         True if successful, False otherwise
     """
     logger.info("=" * 60)
-    logger.info("STEP 0: Merge and Sample Data")
+    logger.info("STEP 0: Load Merged Dataset and Sample")
     logger.info("=" * 60)
 
     try:
-        # Load data
-        annotation_df = load_annotation_data(annotation_path)
-        dialogue_df = load_dialogue_data(dialogue_path)
-
-        # Merge data
-        merged_df = merge_data(annotation_df, dialogue_df)
+        # Load merged data
+        df = load_merged_data(input_path)
 
         # Filter for non-empty implicature
-        filtered_df = filter_implicature(merged_df)
+        filtered_df = filter_implicature(df)
 
         # Sample with stratification
         sampled_df = stratify_sample(filtered_df, n_samples, random_state)
@@ -311,6 +234,7 @@ def run_step0(
         # Log summary
         logger.info("=" * 60)
         logger.info("STEP 0 COMPLETED SUCCESSFULLY")
+        logger.info(f"Input: {input_path}")
         logger.info(f"Output: {output_path}")
         logger.info(f"Total samples: {len(output_df)}")
         logger.info("=" * 60)
@@ -327,22 +251,16 @@ def run_step0(
 
 def main():
     """Main entry point for Step 0."""
-    parser = argparse.ArgumentParser(description="Step 0: Merge and Sample Data")
-    parser.add_argument(
-        "--annotation",
-        type=Path,
-        default=Path(__file__).parent.parent.parent
-        / "data"
-        / "(2000 samples) merged_output.xlsx - Annotation.csv",
-        help="Path to annotation CSV file",
+    parser = argparse.ArgumentParser(
+        description="Step 0: Load Merged Dataset and Sample"
     )
     parser.add_argument(
-        "--dialogue",
+        "--input",
         type=Path,
-        default=Path(__file__).parent.parent.parent
+        default=Path(__file__).parent.parent.parent.parent
         / "data"
-        / "(2000 samples) merged_output.xlsx - Dialogue.tsv",
-        help="Path to dialogue TSV file",
+        / "merged_dataset.csv",
+        help="Path to merged dataset CSV file",
     )
     parser.add_argument(
         "--output",
@@ -369,8 +287,7 @@ def main():
 
     # Run step
     success = run_step0(
-        annotation_path=args.annotation,
-        dialogue_path=args.dialogue,
+        input_path=args.input,
         output_path=args.output,
         n_samples=args.n_samples,
         random_state=args.random_state,

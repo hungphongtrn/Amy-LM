@@ -1,2 +1,0 @@
-[console_scripts]
-proactive-sat-pipeline = proactive_sat.data_pipeline.run_pipeline:main
