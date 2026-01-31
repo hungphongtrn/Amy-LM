@@ -35,7 +35,7 @@ dependencies = [
     "tenacity>=8.2.0",
     
     # TTS
-    "qwen-tts>=0.1.0",
+    "qwen-tts",
     
     # Attention
     "flash-attn",
