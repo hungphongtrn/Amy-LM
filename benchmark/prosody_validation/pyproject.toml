@@ -13,10 +13,13 @@ dependencies = [
     "tqdm>=4.66.0",
     "python-dotenv>=1.0.0",
     
-    # ASR - Whisper
-    "openai-whisper>=20231117",
+    # ASR - Whisper (HuggingFace Transformers for batching support)
+    "openai-whisper>=20231117",  # Fallback
     "torch>=2.0.0",
     "torchaudio>=2.0.0",
+    "transformers>=4.35.0",  # HuggingFace Transformers for pipeline batching
+    "datasets[audio]>=2.14.0",  # For audio dataset handling
+    "accelerate>=0.25.0",  # For optimized inference
     
     # Audio processing
     "soundfile>=0.12.0",

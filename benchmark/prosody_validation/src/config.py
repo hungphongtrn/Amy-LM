@@ -38,8 +38,6 @@ class Config:
 
     # Concurrency settings
     MAX_CONCURRENT_LLM: int = 100
-    MAX_CONCURRENT_TTS: int = 5
-    MAX_CONCURRENT_ASR: int = 10
 
     # API settings
     OPENROUTER_API_KEY: str = field(
@@ -52,8 +50,17 @@ class Config:
     QWEN3_TTS_DEVICE: str = "cuda"
 
     # Whisper settings
+    WHISPER_MODEL_ID: str = "openai/whisper-large-v3"
     WHISPER_MODEL_SIZE: str = "base"
     WHISPER_DEVICE: str = "cpu"
+    WHISPER_CHUNK_LENGTH_S: int = 30  # Chunk length for long-form transcription
+    WHISPER_BATCH_SIZE: int = 16  # Batch size for inference
+    WHISPER_ATTENTION_IMPLEMENTATION: str = (
+        "sdpa"  # "flash_attention_2", "sdpa", or "default"
+    )
+    WHISPER_USE_TORCH_COMPILE: bool = (
+        False  # torch.compile for 4.5x speed-up (not compatible with chunked algorithm)
+    )
 
     # Logging settings
     LOG_LEVEL: str = "INFO"

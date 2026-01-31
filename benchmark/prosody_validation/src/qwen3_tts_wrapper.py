@@ -4,7 +4,7 @@ Qwen3-TTS Wrapper for speech generation with prosody control using qwen-tts libr
 
 import asyncio
 import logging
-import os
+import random
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from tqdm.asyncio import tqdm_asyncio
@@ -14,6 +14,9 @@ import soundfile as sf
 from qwen_tts import Qwen3TTSModel
 
 logger = logging.getLogger(__name__)
+
+# Available speakers
+SPEAKERS = ["Ryan", "Aiden"]
 
 
 class Qwen3TTSWrapper:
@@ -78,71 +81,140 @@ class Qwen3TTSWrapper:
             intent: Intent label (e.g., "request", "complaint", "praise")
 
         Returns:
-            Prosody instruction string for TTS
+            Prosody instruction string for TTS in English
         """
         # Normalize emotion for prosody mapping
         emotion_lower = emotion.lower().strip() if emotion else "neutral"
 
-        # Prosody mappings based on emotion
+        # Prosody mappings based on emotion (original English)
         prosody_map = {
-            "angry": "用愤怒的语气说",
-            "frustrated": "用沮丧的语气说",
-            "annoyed": "用恼怒的语气说",
-            "excited": "用兴奋的语气说",
-            "happy": "用开心的语气说",
-            "sad": "用悲伤的语气说",
-            "anxious": "用焦虑的语气说",
-            "neutral": "用中性的语气说",
-            "positive": "用积极的语气说",
-            "negative": "用消极的语气说",
+            "angry": "firm and agitated tone",
+            "frustrated": "impatient and irritated tone",
+            "annoyed": "slightly irritated tone",
+            "excited": "energetic and enthusiastic tone",
+            "happy": "cheerful and warm tone",
+            "sad": "soft and melancholic tone",
+            "anxious": "nervous and rushed tone",
+            "neutral": "calm and neutral tone",
+            "positive": "warm and friendly tone",
+            "negative": "cold and distant tone",
         }
 
-        prosody = prosody_map.get(emotion_lower, "用中性的语气说")
+        prosody = prosody_map.get(emotion_lower, "calm and neutral tone")
 
-        # Build instruction in Chinese for better compatibility with Qwen3-TTS
-        instruction = f"{prosody}。这是一个{speech_act}，表达{intent}的意图。"
+        # Build instruction in English (original format)
+        instruction = (
+            f"Speak with a {prosody}. This is a {speech_act} expressing {intent}."
+        )
 
         return instruction
 
-    async def generate_speech(
+    def generate_speech_batch(
         self,
-        text: str,
-        prosody_instruction: str,
-        output_path: Path,
-        language: str = "Auto",
-    ) -> bool:
-        """Generate speech from text with prosody guidance.
+        items: List[Dict[str, Any]],
+        output_dir: Path,
+    ) -> List[Dict[str, Any]]:
+        """Generate speech for a batch of items using batched inference.
 
         Args:
-            text: Text to synthesize
-            prosody_instruction: Prosody guidance instruction
-            output_path: Path to save the generated audio
-            language: Language code (default: "Auto" for auto-detection)
+            items: List of dictionaries containing 'dialog_id', 'text', 'emotion', 'speech_act', 'intent'
+            output_dir: Directory to save generated audio files
 
         Returns:
-            True if successful, False otherwise
+            List of results with dialog_id, audio_path, and success status
         """
         try:
-            # Use default speaker and apply prosody instruction
+            # Prepare batched inputs
+            texts = []
+            instructs = []
+            speakers = []
+            output_paths = []
+            dialog_ids = []
+            existing_results = []
+
+            for item in items:
+                dialog_id = item["dialog_id"]
+                text = item["text"]
+                emotion = item.get("emotion", "neutral")
+                speech_act = item.get("speech_act", "statement")
+                intent = item.get("intent", "inform")
+
+                output_path = output_dir / f"{dialog_id}.wav"
+
+                # Skip if audio already exists
+                if output_path.exists():
+                    logger.debug(f"Audio already exists: {output_path}")
+                    existing_results.append(
+                        {
+                            "dialog_id": dialog_id,
+                            "audio_path": str(output_path),
+                            "success": True,
+                        }
+                    )
+                    continue
+
+                output_paths.append(output_path)
+                dialog_ids.append(dialog_id)
+
+                # Generate prosody instruction
+                prosody_instruction = self.generate_prosody_instruction(
+                    emotion, speech_act, intent
+                )
+
+                texts.append(text)
+                instructs.append(prosody_instruction)
+                # Random speaker selection
+                speakers.append(random.choice(SPEAKERS))
+
+            # If all files exist, return early
+            if not texts:
+                return existing_results
+
+            # Generate speech in batch
             wavs, sr = self.model.generate_custom_voice(
-                text=text,
-                language=language,
-                speaker="Vivian",  # Default speaker
-                instruct=prosody_instruction if prosody_instruction else None,
+                text=texts,
+                language="Auto",
+                speaker=speakers,
+                instruct=instructs,
             )
 
-            # Save audio
-            sf.write(str(output_path), wavs[0], sr)
+            # Save each audio file
+            results = existing_results
+            for i, (dialog_id, output_path) in enumerate(zip(dialog_ids, output_paths)):
+                if i < len(wavs):
+                    sf.write(str(output_path), wavs[i], sr)
+                    results.append(
+                        {
+                            "dialog_id": dialog_id,
+                            "audio_path": str(output_path),
+                            "success": True,
+                        }
+                    )
+                    logger.debug(f"Generated speech: {output_path}")
+                else:
+                    results.append(
+                        {
+                            "dialog_id": dialog_id,
+                            "audio_path": None,
+                            "success": False,
+                        }
+                    )
 
-            logger.debug(f"Generated speech: {output_path}")
-            return True
+            return results
 
         except Exception as e:
-            logger.error(f"Error generating speech: {e}")
+            logger.error(f"Error generating speech batch: {e}")
             import traceback
 
             traceback.print_exc()
-            return False
+            return [
+                {
+                    "dialog_id": item["dialog_id"],
+                    "audio_path": None,
+                    "success": False,
+                }
+                for item in items
+            ]
 
     async def generate_batch(
         self,
@@ -150,7 +222,7 @@ class Qwen3TTSWrapper:
         output_dir: Path,
         progress_desc: str = "Generating speech",
     ) -> List[Dict[str, Any]]:
-        """Generate speech for a batch of texts.
+        """Generate speech for all texts with batching.
 
         Args:
             texts: List of dictionaries containing 'dialog_id', 'text', 'emotion', 'speech_act', 'intent'
@@ -171,50 +243,17 @@ class Qwen3TTSWrapper:
         # Create progress bar
         progress_bar = tqdm_asyncio(total=len(texts), desc=progress_desc, unit="audio")
 
-        for item in texts:
-            dialog_id = item["dialog_id"]
-            text = item["text"]
-            emotion = item.get("emotion", "neutral")
-            speech_act = item.get("speech_act", "statement")
-            intent = item.get("intent", "inform")
-
-            output_path = output_dir / f"{dialog_id}.wav"
-
-            # Skip if audio already exists
-            if output_path.exists():
-                logger.debug(f"Audio already exists: {output_path}")
-                results.append(
-                    {
-                        "dialog_id": dialog_id,
-                        "audio_path": str(output_path),
-                        "success": True,
-                    }
-                )
-                progress_bar.update(1)
-                continue
-
-            # Generate prosody instruction
-            prosody_instruction = self.generate_prosody_instruction(
-                emotion, speech_act, intent
-            )
-
-            # Generate speech
-            success = await self.generate_speech(text, prosody_instruction, output_path)
-
-            results.append(
-                {
-                    "dialog_id": dialog_id,
-                    "audio_path": str(output_path) if success else None,
-                    "success": success,
-                }
-            )
-
-            progress_bar.update(1)
+        # Process in batches sequentially
+        for i in range(0, len(texts), self.batch_size):
+            batch = texts[i : i + self.batch_size]
+            batch_results = self.generate_speech_batch(batch, output_dir)
+            results.extend(batch_results)
+            progress_bar.update(len(batch))
 
         progress_bar.close()
 
         # Log summary
-        success_count = sum(1 for r in results if r["success"])
+        success_count = sum(1 for r in results if r.get("success"))
         logger.info(
             f"Generated {success_count}/{len(results)} audio files successfully"
         )

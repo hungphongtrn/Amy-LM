@@ -27,8 +27,6 @@ batch_sizes:
 # Concurrency settings
 concurrency:
   max_concurrent_llm: 100
-  max_concurrent_tts: 5
-  max_concurrent_asr: 10
 
 # API settings
 api:
@@ -40,11 +38,16 @@ qwen3_tts:
   repo_path: null  # Path to Qwen3-TTS repo, e.g., "/path/to/Qwen3-TTS"
   device: "cuda"   # "cuda" or "cpu"
 
-# Whisper ASR settings
+# Whisper ASR settings (using HuggingFace Transformers for batching support)
 whisper:
-  model_size: "base"  # "tiny", "base", "small", "medium", "large"
-  device: "cpu"       # "cuda" or "cpu"
+  model_id: "openai/whisper-large-v3"  # HuggingFace model ID
+  model_size: "base"  # Fallback: "tiny", "base", "small", "medium", "large"
+  device: "cuda"       # "cuda" or "cpu"
   language: "en"      # Language code, null for auto-detection
+  chunk_length_s: 30   # Chunk length for long-form transcription
+  batch_size: 16       # Batch size for inference
+  attention: "sdpa"    # "flash_attention_2", "sdpa", or "default"
+  torch_compile: false # torch.compile for 4.5x speed-up (not compatible with chunked algorithm)
 
 # Logging settings
 logging:
