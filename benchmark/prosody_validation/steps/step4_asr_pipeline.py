@@ -1,5 +1,12 @@
 """
 Step 4: ASR Pipeline - Transcribe audio, then analyze with LLM
+
+Simplified version:
+- Removes WhisperWrapper entirely
+- Uses Hugging Face transformers pipeline with openai/whisper-large-v3
+- Loads Whisper ONCE
+- Feeds ALL audio paths at once; batching is handled by pipeline(batch_size=asr_batch_size)
+- LLM stage stays async with a concurrency limit
 """
 
 import argparse
@@ -7,281 +14,328 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+
+import torch
+from tqdm import tqdm
+from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.config import get_config
 from src.utils import setup_logging, read_csv, write_jsonl
-from src.whisper_wrapper import WhisperWrapper
 from src.openrouter_client import OpenRouterClient
 
 logger = logging.getLogger(__name__)
 
-
-# ASR response prompt template
 ASR_PROMPT = """You heard someone say: "{transcription}"
 
 How would you respond? What do you think they mean?"""
 
 
 def create_asr_prompt(transcription: str) -> str:
-    """Create the ASR response prompt.
-
-    Args:
-        transcription: The transcribed audio text
-
-    Returns:
-        Formatted prompt string
-    """
     return ASR_PROMPT.format(transcription=transcription)
 
 
-async def process_single_asr(
-    whisper_wrapper: WhisperWrapper,
-    openrouter_client: OpenRouterClient,
-    item: Dict[str, Any],
-    asr_model: str,
-    llm_model: str,
-) -> Dict[str, Any]:
-    """Process a single audio file through ASR pipeline.
+def _base_result(item: Dict[str, Any], audio_path: Path) -> Dict[str, Any]:
+    return {
+        "dialog_id": item.get("dialog_id", ""),
+        "audio_path": str(audio_path),
+        "original_utterance": item.get("text", ""),
+        "rewritten_text": item.get("text", ""),
+        "emotion": item.get("emotion", ""),
+    }
 
-    Args:
-        whisper_wrapper: Whisper wrapper instance
-        openrouter_client: OpenRouter client
-        item: Dictionary with audio_path and metadata
-        asr_model: Whisper model size
-        llm_model: LLM model for response
 
-    Returns:
-        Dictionary with processing results
+def _build_results_from_transcriptions(
+    transcription_results: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """Map transcription result by audio_path for joining with manifest items."""
+    m: Dict[str, Dict[str, Any]] = {}
+    for r in transcription_results:
+        ap = str(r.get("audio_path", ""))
+        if ap:
+            m[ap] = r
+    return m
+
+
+def _resolve_whisper_model_id(default: str = "openai/whisper-large-v3") -> str:
     """
-    audio_path = Path(item.get("audio_path", ""))
+    Optional: allow config override if you already have WHISPER_MODEL_ID.
+    Falls back to openai/whisper-large-v3.
+    """
+    cfg = get_config()
+    return getattr(cfg, "WHISPER_MODEL_ID", None) or default
 
-    # Step 1: Transcribe audio
+
+def load_whisper_pipe(model_id: str, asr_batch_size: int):
+    """
+    Load Whisper model + processor + HF pipeline once.
+    Batching is handled by pipeline(..., batch_size=asr_batch_size).
+    """
+    device_str = "cuda:0" if torch.cuda.is_available() else "cpu"
+    torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+
+    model = AutoModelForSpeechSeq2Seq.from_pretrained(
+        model_id,
+        torch_dtype=torch_dtype,
+        low_cpu_mem_usage=True,
+        use_safetensors=True,
+    )
+    model.to(device_str)
+
+    processor = AutoProcessor.from_pretrained(model_id)
+
+    # Most compatible: int GPU index or -1 for CPU
+    device_arg = 0 if torch.cuda.is_available() else -1
+
+    asr_pipe = pipeline(
+        "automatic-speech-recognition",
+        model=model,
+        tokenizer=processor.tokenizer,
+        feature_extractor=processor.feature_extractor,
+        torch_dtype=torch_dtype,
+        device=device_arg,
+        batch_size=asr_batch_size,
+    )
+    return asr_pipe
+
+
+def transcribe_all_audio(
+    asr_pipe,
+    audio_paths: List[Path],
+) -> List[Dict[str, Any]]:
+    """
+    Transcribe all audio paths in one call.
+    HF pipeline handles micro-batching internally via batch_size.
+    """
+    audio_strs = [str(p) for p in audio_paths]
+
+    # If you want to be strict about existence, uncomment:
+    # audio_strs = [p for p in audio_strs if Path(p).exists()]
+
     try:
-        transcription_result = whisper_wrapper.transcribe_audio(audio_path)
+        outputs = asr_pipe(audio_strs)
 
-        if not transcription_result.get("success"):
+        # transformers returns dict for single input, list for multiple
+        if isinstance(outputs, dict):
+            outputs = [outputs]
+        else:
+            outputs = list(outputs)
+
+        results: List[Dict[str, Any]] = []
+        for p, out in zip(audio_strs, outputs):
+            results.append(
+                {
+                    "audio_path": p,
+                    "success": True,
+                    "text": ((out or {}).get("text") or "").strip(),
+                    "error": None,
+                }
+            )
+
+        # In the unlikely case outputs length mismatches, mark remaining as failures
+        if len(outputs) < len(audio_strs):
+            for p in audio_strs[len(outputs) :]:
+                results.append(
+                    {
+                        "audio_path": p,
+                        "success": False,
+                        "text": None,
+                        "error": "ASR pipeline returned no output for this file",
+                    }
+                )
+
+        return results
+
+    except Exception as e:
+        logger.error(f"ASR failed: {e}")
+        return [
+            {
+                "audio_path": str(p),
+                "success": False,
+                "text": None,
+                "error": str(e),
+            }
+            for p in audio_paths
+        ]
+
+
+async def llm_stage(
+    openrouter_client: OpenRouterClient,
+    items: List[Dict[str, Any]],
+    transcriptions_by_path: Dict[str, Dict[str, Any]],
+    llm_model: str,
+    max_concurrency: int = 16,
+    progress_desc: str = "LLM responses",
+) -> List[Dict[str, Any]]:
+    sem = asyncio.Semaphore(max_concurrency)
+
+    async def _one(item: Dict[str, Any]) -> Dict[str, Any]:
+        audio_path = Path(item.get("audio_path", ""))
+        base = _base_result(item, audio_path)
+
+        tr = transcriptions_by_path.get(str(audio_path))
+        if not tr or not tr.get("success"):
             return {
-                "dialog_id": item.get("dialog_id", ""),
-                "audio_path": str(audio_path),
-                "original_utterance": item.get("text", ""),
-                "rewritten_text": item.get("text", ""),
-                "emotion": item.get("emotion", ""),
+                **base,
                 "transcription": None,
                 "transcription_success": False,
-                "transcription_error": transcription_result.get(
-                    "error", "Unknown error"
-                ),
+                "transcription_error": (tr or {}).get("error", "Unknown error"),
                 "asr_response": None,
                 "asr_success": False,
                 "asr_error": "Skipped due to transcription failure",
             }
 
-        transcription = transcription_result.get("text", "")
+        transcription = (tr.get("text") or "").strip()
+        if not transcription:
+            return {
+                **base,
+                "transcription": "",
+                "transcription_success": True,
+                "transcription_error": None,
+                "asr_response": None,
+                "asr_success": False,
+                "asr_error": "Empty transcription",
+            }
 
-    except Exception as e:
-        logger.error(f"Transcription error for {audio_path}: {e}")
-        return {
-            "dialog_id": item.get("dialog_id", ""),
-            "audio_path": str(audio_path),
-            "original_utterance": item.get("text", ""),
-            "rewritten_text": item.get("text", ""),
-            "emotion": item.get("emotion", ""),
-            "transcription": None,
-            "transcription_success": False,
-            "transcription_error": str(e),
-            "asr_response": None,
-            "asr_success": False,
-            "asr_error": "Skipped due to transcription failure",
-        }
-
-    # Step 2: Get LLM response from transcription
-    try:
         prompt = create_asr_prompt(transcription)
-        response = await openrouter_client.chat_text(
-            prompt=prompt, model=llm_model, temperature=0.7, max_tokens=256
-        )
 
-        return {
-            "dialog_id": item.get("dialog_id", ""),
-            "audio_path": str(audio_path),
-            "original_utterance": item.get("text", ""),
-            "rewritten_text": item.get("text", ""),
-            "emotion": item.get("emotion", ""),
-            "transcription": transcription,
-            "transcription_success": True,
-            "transcription_error": None,
-            "asr_response": response.strip(),
-            "asr_success": True,
-            "asr_error": None,
-        }
+        try:
+            async with sem:
+                response = await openrouter_client.chat_text(
+                    prompt=prompt,
+                    model=llm_model,
+                    temperature=0.7,
+                    max_tokens=256,
+                )
 
-    except Exception as e:
-        logger.error(f"ASR LLM error for {audio_path}: {e}")
-        return {
-            "dialog_id": item.get("dialog_id", ""),
-            "audio_path": str(audio_path),
-            "original_utterance": item.get("text", ""),
-            "rewritten_text": item.get("text", ""),
-            "emotion": item.get("emotion", ""),
-            "transcription": transcription,
-            "transcription_success": True,
-            "transcription_error": None,
-            "asr_response": None,
-            "asr_success": False,
-            "asr_error": str(e),
-        }
+            return {
+                **base,
+                "transcription": transcription,
+                "transcription_success": True,
+                "transcription_error": None,
+                "asr_response": (response or "").strip(),
+                "asr_success": True,
+                "asr_error": None,
+            }
+
+        except Exception as e:
+            logger.error(f"ASR LLM error for {audio_path}: {e}")
+            return {
+                **base,
+                "transcription": transcription,
+                "transcription_success": True,
+                "transcription_error": None,
+                "asr_response": None,
+                "asr_success": False,
+                "asr_error": str(e),
+            }
+
+    tasks = [asyncio.create_task(_one(it)) for it in items]
+
+    results: List[Dict[str, Any]] = []
+    for t in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc=progress_desc, unit="files"):
+        results.append(await t)
+    return results
 
 
-async def process_asr_batch(
-    whisper_wrapper: WhisperWrapper,
+async def _run_llm_and_close(
     openrouter_client: OpenRouterClient,
     items: List[Dict[str, Any]],
-    asr_model: str,
+    transcriptions_by_path: Dict[str, Dict[str, Any]],
     llm_model: str,
-    progress_desc: str = "Processing ASR pipeline",
+    llm_max_concurrency: int,
 ) -> List[Dict[str, Any]]:
-    """Process a batch of audio files through ASR pipeline.
-
-    Args:
-        whisper_wrapper: Whisper wrapper instance
-        openrouter_client: OpenRouter client
-        items: List of dictionaries with audio data
-        asr_model: Whisper model size
-        llm_model: LLM model for response
-        progress_desc: Description for progress bar
-
-    Returns:
-        List of processing result dictionaries
-    """
-    from tqdm.asyncio import tqdm_asyncio
-
-    # Create tasks for all items
-    tasks = [
-        process_single_asr(
-            whisper_wrapper, openrouter_client, item, asr_model, llm_model
+    try:
+        return await llm_stage(
+            openrouter_client=openrouter_client,
+            items=items,
+            transcriptions_by_path=transcriptions_by_path,
+            llm_model=llm_model,
+            max_concurrency=llm_max_concurrency,
         )
-        for item in items
-    ]
-
-    # Process with progress bar
-    progress_bar = tqdm_asyncio(total=len(tasks), desc=progress_desc, unit="files")
-
-    results = []
-    for coro in asyncio.as_completed(tasks):
-        result = await coro
-        results.append(result)
-        progress_bar.update(1)
-
-    progress_bar.close()
-
-    return results
+    finally:
+        await openrouter_client.close()
 
 
 def run_step4(
     manifest_path: Path,
     output_path: Path,
-    asr_model: str = "base",
+    asr_model: str = "base",  # kept for CLI compatibility; HF uses model_id
     llm_model: str = "openai/gpt-4o-mini",
+    # ASR knobs
+    asr_batch_size: int = 32,  # <- per your request
+    # LLM knobs
+    llm_max_concurrency: int = 16,
 ) -> bool:
-    """Execute Step 4: ASR Pipeline.
-
-    Args:
-        manifest_path: Path to step2_audio_manifest.csv
-        output_path: Path to save step4_asr_responses.jsonl
-        asr_model: Whisper model size
-        llm_model: LLM model for response
-
-    Returns:
-        True if successful, False otherwise
-    """
     logger.info("=" * 60)
-    logger.info("STEP 4: ASR Pipeline")
+    logger.info("STEP 4: ASR Pipeline (HF Whisper batched + LLM)")
     logger.info("=" * 60)
 
     try:
-        # Load manifest
         logger.info(f"Loading manifest from {manifest_path}")
         manifest = read_csv(manifest_path)
         logger.info(f"Loaded {len(manifest)} items")
 
-        # Filter to only successful audio files
         successful_items = [
-            item for item in manifest if item.get("success", "").lower() == "true"
+            item for item in manifest if str(item.get("success", "")).lower() == "true"
         ]
         logger.info(f"Processing {len(successful_items)} successful audio files")
 
         if not successful_items:
             logger.warning("No successful audio files to process")
-            # Still write empty output
             write_jsonl([], output_path)
             return True
 
-        # Create Whisper wrapper
-        whisper_wrapper = WhisperWrapper(
-            model_size=asr_model, device=get_config().WHISPER_DEVICE
+        # ---- Stage 1 (SYNC): load Whisper once, transcribe all audio paths (pipeline handles batching) ----
+        audio_paths = [Path(it.get("audio_path", "")) for it in successful_items]
+
+        model_id = _resolve_whisper_model_id(default="openai/whisper-large-v3")
+        logger.info(
+            f"Using Whisper model_id: {model_id} (CLI --asr-model='{asr_model}' kept for compatibility)"
+        )
+        logger.info(f"ASR pipeline batch_size: {asr_batch_size}")
+
+        asr_pipe = load_whisper_pipe(model_id=model_id, asr_batch_size=asr_batch_size)
+
+        transcription_results = transcribe_all_audio(asr_pipe=asr_pipe, audio_paths=audio_paths)
+
+        # Cleanup to free memory for LLM stage (optional but helpful on smaller GPUs)
+        del asr_pipe
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+
+        transcriptions_by_path = _build_results_from_transcriptions(transcription_results)
+
+        # ---- Stage 2 (ASYNC): LLM responses ----
+        openrouter_client = OpenRouterClient()
+        results = asyncio.run(
+            _run_llm_and_close(
+                openrouter_client=openrouter_client,
+                items=successful_items,
+                transcriptions_by_path=transcriptions_by_path,
+                llm_model=llm_model,
+                llm_max_concurrency=llm_max_concurrency,
+            )
         )
 
-        if not whisper_wrapper.load_model():
-            logger.error("Failed to load Whisper model")
-            return False
-
-        # Create OpenRouter client
-        openrouter_client = OpenRouterClient()
-
-        try:
-            # Process all items
-            results = asyncio.run(
-                process_asr_batch(
-                    whisper_wrapper,
-                    openrouter_client,
-                    successful_items,
-                    asr_model,
-                    llm_model,
-                    "Processing ASR pipeline",
-                )
-            )
-
-        finally:
-            whisper_wrapper.unload_model()
-            asyncio.run(openrouter_client.close())
-
-        # Sort results by dialog_id
         results.sort(key=lambda x: x.get("dialog_id", ""))
 
-        # Save output
         write_jsonl(results, output_path)
         logger.info(f"Saved {len(results)} ASR responses to {output_path}")
 
-        # Log summary
-        transcription_success = sum(
-            1 for r in results if r.get("transcription_success")
-        )
+        transcription_success = sum(1 for r in results if r.get("transcription_success"))
         asr_success = sum(1 for r in results if r.get("asr_success"))
         logger.info(f"Transcription success: {transcription_success}/{len(results)}")
         logger.info(f"ASR pipeline success: {asr_success}/{len(results)}")
-
-        # Log sample responses
-        logger.info("Sample ASR responses:")
-        for i, result in enumerate(results[:3]):
-            if result.get("asr_success"):
-                logger.info(f"  [{result.get('dialog_id')}]")
-                logger.info(
-                    f"    Original: {result.get('original_utterance', '')[:80]}..."
-                )
-                logger.info(
-                    f"    Transcription: {result.get('transcription', '')[:80]}..."
-                )
-                logger.info(f"    Response: {result.get('asr_response', '')[:80]}...")
 
         logger.info("=" * 60)
         logger.info("STEP 4 COMPLETED SUCCESSFULLY")
         logger.info(f"Output: {output_path}")
         logger.info("=" * 60)
-
         return True
 
     except Exception as e:
@@ -293,7 +347,6 @@ def run_step4(
 
 
 def main():
-    """Main entry point for Step 4."""
     parser = argparse.ArgumentParser(description="Step 4: ASR Pipeline")
     parser.add_argument(
         "--manifest",
@@ -304,10 +357,7 @@ def main():
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path(__file__).parent.parent
-        / "outputs"
-        / "responses"
-        / "step4_asr_responses.jsonl",
+        default=Path(__file__).parent.parent / "outputs" / "responses" / "step4_asr_responses.jsonl",
         help="Path to output JSONL file",
     )
     parser.add_argument(
@@ -315,13 +365,25 @@ def main():
         type=str,
         default="base",
         choices=["tiny", "base", "small", "medium", "large"],
-        help="Whisper model size",
+        help="Kept for CLI compatibility (HF uses WHISPER_MODEL_ID or openai/whisper-large-v3).",
     )
     parser.add_argument(
         "--llm-model",
         type=str,
         default="openai/gpt-4o-mini",
         help="LLM model for response",
+    )
+    parser.add_argument(
+        "--asr-batch-size",
+        type=int,
+        default=4,
+        help="HF pipeline batch_size (controls ASR micro-batching).",
+    )
+    parser.add_argument(
+        "--llm-max-concurrency",
+        type=int,
+        default=16,
+        help="Max in-flight LLM requests.",
     )
     parser.add_argument(
         "--log-level",
@@ -332,18 +394,16 @@ def main():
     )
 
     args = parser.parse_args()
-
-    # Setup logging
     setup_logging(args.log_level)
 
-    # Run step
     success = run_step4(
         manifest_path=args.manifest,
         output_path=args.output,
         asr_model=args.asr_model,
         llm_model=args.llm_model,
+        asr_batch_size=args.asr_batch_size,
+        llm_max_concurrency=args.llm_max_concurrency,
     )
-
     sys.exit(0 if success else 1)
 
 

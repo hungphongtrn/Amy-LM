@@ -21,8 +21,8 @@ models:
 
 # Batch processing settings
 batch_sizes:
-  tts: 10
-  whisper: 20
+  tts: 32
+  whisper: 32
 
 # Concurrency settings
 concurrency:

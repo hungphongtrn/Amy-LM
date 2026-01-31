@@ -141,7 +141,7 @@ Transcribe audio with Whisper, then send transcription to LLM for analysis.
 
 ```bash
 cd benchmark/prosody_validation
-uv run python -m steps.step4_asr_pipeline --asr-model base --llm-model openai/gpt-4o-mini
+uv run python -m steps.step4_asr_pipeline --llm-model openai/gpt-4o-mini
 ```
 
 **Input:** `data/step2_audio_manifest.csv`
