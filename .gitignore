@@ -9,3 +9,6 @@ __pycache__/
 
 wandb/
 checkpoints/
+data/
+.data/
+.DS_STORE
