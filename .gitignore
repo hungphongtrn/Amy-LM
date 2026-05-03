@@ -12,3 +12,13 @@ wandb/
 checkpoints/
 
 .opencode/
+
+# macOS system files
+.DS_Store
+**/.DS_Store
+
+# Agent-specific data
+.agents/
+
+# Research notes (temporary)
+docs/research/
