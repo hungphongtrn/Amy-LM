@@ -9,6 +9,7 @@ __pycache__/
 
 wandb/
 checkpoints/
+audio_samples/
 data/
 .data/
 .DS_STORE
