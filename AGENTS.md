@@ -54,3 +54,17 @@ Amy-LM/
 - API keys are loaded from environment or `.env` files
 - Training configs are in YAML format
 - Prefer async patterns for API calls
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues on `hungphongtrn/Amy-LM`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Standard label vocabulary (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context repo — one `CONTEXT.md` at the root. See `docs/agents/domain.md`.
