@@ -7,7 +7,6 @@ which collect statistics during preprocessing and generate JSON reports.
 import json
 import pytest
 from pathlib import Path
-from dataclasses import fields
 
 from preprocessing.reporting import ProcessingSummary, generate_report
 
