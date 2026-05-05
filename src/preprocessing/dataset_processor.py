@@ -267,7 +267,7 @@ class DatasetProcessor:
         
         return resampled.astype(np.float32)
     
-    def save(self, dataset: Dataset, repo_id: str) -> Path:
+    def save(self, dataset: Dataset, repo_id: str, split: str = "data") -> Path:
         """Save a dataset to disk as parquet.
         
         Creates the directory structure output_dir / repo_id and saves
@@ -276,21 +276,21 @@ class DatasetProcessor:
         Args:
             dataset: HF Dataset to save
             repo_id: Repository ID (e.g., "org/dataset-name")
+            split: Split name for filename (e.g., "train", "validation")
         
         Returns:
             Path to saved parquet file
         
         Example:
-            >>> processor.save(dataset, "my-org/my-dataset")
+            >>> processor.save(dataset, "my-org/my-dataset", split="train")
             PosixPath('output/my-org/my-dataset/train.parquet')
         """
         # Create output directory for this dataset
         save_dir = self.output_dir / repo_id
         save_dir.mkdir(parents=True, exist_ok=True)
         
-        # Determine filename (use split name if available, default to "data")
-        # For now, use "train.parquet" as default
-        output_path = save_dir / "train.parquet"
+        # Use split name for filename
+        output_path = save_dir / f"{split}.parquet"
         
         # Save to parquet
         dataset.to_parquet(str(output_path))

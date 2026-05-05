@@ -287,7 +287,7 @@ class TestDatasetProcessor:
             
             # Save to disk
             repo_id = "my-org/processed-dataset"
-            processor.save(result, repo_id)
+            processor.save(result, repo_id, split="train")
             
             # Check file was created
             expected_path = temp_output_dir / repo_id / "train.parquet"
@@ -323,7 +323,7 @@ class TestDatasetProcessor:
             )
             
             repo_id = "org-name/dataset-name"
-            processor.save(result, repo_id)
+            processor.save(result, repo_id, split="train")
             
             # Should create nested directory
             expected_dir = temp_output_dir / repo_id
