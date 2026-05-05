@@ -96,7 +96,8 @@ class DatasetProcessor:
         dataset_name: str, 
         split: str, 
         max_samples: Optional[int] = None,
-        batch_size: int = 64,
+        batch_size: int = 8,
+        config: Optional[str] = None,
     ) -> Dataset:
         """Process a dataset through FACodec encoder.
         
@@ -109,6 +110,7 @@ class DatasetProcessor:
             max_samples: Maximum number of samples to process (None for all)
             batch_size: Number of samples to encode at once through FACodec.
                 Larger values increase GPU throughput but also memory usage.
+            config: Optional dataset config/subset name (e.g., "emns" for CAMEO).
         
         Returns:
             A HF Dataset with columns:
@@ -127,7 +129,10 @@ class DatasetProcessor:
             Samples that fail encoding are skipped but processing continues.
             Check the tqdm output for failure count.
         """
-        source_dataset = load_dataset(dataset_name, split=split)
+        if config:
+            source_dataset = load_dataset(dataset_name, config, split=split)
+        else:
+            source_dataset = load_dataset(dataset_name, split=split)
         
         if max_samples is not None:
             source_dataset = source_dataset.select(range(min(max_samples, len(source_dataset))))
@@ -187,7 +192,12 @@ class DatasetProcessor:
             audio_array = audio_data
             sampling_rate = 16000
         else:
-            raise ValueError(f"Unsupported audio format: {type(audio_data)}")
+            try:
+                samples = audio_data.get_all_samples()
+                audio_array = samples.data.numpy().squeeze()
+                sampling_rate = samples.sample_rate
+            except AttributeError:
+                raise ValueError(f"Unsupported audio format: {type(audio_data)}")
         
         if isinstance(audio_array, list):
             audio_array = np.array(audio_array, dtype=np.float32)

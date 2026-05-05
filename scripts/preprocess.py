@@ -114,6 +114,13 @@ Examples:
         help="Skip pushing to Hugging Face Hub (save locally only)"
     )
     
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Dataset config/subset name (e.g., 'emns' for CAMEO). Only needed for multi-config datasets."
+    )
+    
     return parser
 
 
@@ -184,7 +191,8 @@ def main(
     max_samples: Optional[int],
     device: str,
     output_dir: str,
-    no_push: bool
+    no_push: bool,
+    config: Optional[str] = None
 ) -> int:
     """Main preprocessing pipeline.
     
@@ -248,7 +256,8 @@ def main(
         processed_dataset = processor.process_dataset(
             dataset_name=dataset,
             split=split,
-            max_samples=max_samples
+            max_samples=max_samples,
+            config=config
         )
     except KeyboardInterrupt:
         print("\n\n⚠️  Interrupted by user. Exiting gracefully...")
@@ -342,7 +351,8 @@ def cli_entry_point() -> int:
         max_samples=args.max_samples,
         device=args.device,
         output_dir=args.output_dir,
-        no_push=args.no_push
+        no_push=args.no_push,
+        config=args.config
     )
 
 
