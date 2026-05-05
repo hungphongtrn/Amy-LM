@@ -1,11 +1,11 @@
 """Dataset Processor for Amy-LM preprocessing pipeline.
 
 This module provides the DatasetProcessor class which orchestrates loading
-Hugging Face datasets and running FACodec encoding on each audio sample.
+Hugging Face datasets and running FACodec encoding on batches of audio samples.
 
 The processor:
 1. Loads datasets from Hugging Face Hub (or mocks for testing)
-2. Processes each audio sample through FACodec encoder
+2. Processes audio samples in batches through FACodec encoder
 3. Extracts content, prosody, and timbre codebook indices
 4. Builds a new HF Dataset with all required columns
 5. Handles errors gracefully (per-sample, doesn't crash)
@@ -45,7 +45,7 @@ class DatasetProcessor:
     
     This class orchestrates the preprocessing pipeline:
     - Loads HF datasets (mocked in tests)
-    - Encodes audio through FACodec
+    - Encodes audio through FACodec in batches
     - Extracts codebook indices for content, prosody, timbre
     - Handles errors gracefully (logs failures, continues)
     - Supports saving to disk and pushing to HF Hub
@@ -95,17 +95,20 @@ class DatasetProcessor:
         self, 
         dataset_name: str, 
         split: str, 
-        max_samples: Optional[int] = None
+        max_samples: Optional[int] = None,
+        batch_size: int = 64,
     ) -> Dataset:
         """Process a dataset through FACodec encoder.
         
-        Loads a dataset from Hugging Face Hub, processes each audio sample
-        through FACodec, and returns a new dataset with codebook indices.
+        Loads a dataset from Hugging Face Hub, processes audio samples
+        through FACodec in batches, and returns a new dataset with codebook indices.
         
         Args:
             dataset_name: Hugging Face dataset name (e.g., "user/dataset")
             split: Dataset split to load (e.g., "train", "validation", "test")
             max_samples: Maximum number of samples to process (None for all)
+            batch_size: Number of samples to encode at once through FACodec.
+                Larger values increase GPU throughput but also memory usage.
         
         Returns:
             A HF Dataset with columns:
@@ -124,73 +127,59 @@ class DatasetProcessor:
             Samples that fail encoding are skipped but processing continues.
             Check the tqdm output for failure count.
         """
-        # Load the dataset
-        try:
-            source_dataset = load_dataset(dataset_name, split=split)
-        except Exception as e:
-            raise ValueError(f"Failed to load dataset {dataset_name}/{split}: {e}") from e
+        source_dataset = load_dataset(dataset_name, split=split)
         
-        # Limit samples if requested
         if max_samples is not None:
             source_dataset = source_dataset.select(range(min(max_samples, len(source_dataset))))
         
-        # Process samples
         processed_data: List[Dict[str, Any]] = []
         failures: List[tuple] = []
         
+        audio_batch: List[torch.Tensor] = []
+        pending_entries: List[tuple] = []
+        
         for idx, sample in enumerate(tqdm(source_dataset, desc=f"Processing {dataset_name}")):
             try:
-                processed_sample = self._process_sample(sample, dataset_name, idx)
-                if processed_sample is not None:
-                    processed_data.append(processed_sample)
+                audio_tensor = self._extract_audio_from_sample(sample)
+                audio_batch.append(audio_tensor)
+                pending_entries.append((sample, dataset_name, idx))
+                
+                if len(audio_batch) >= batch_size or idx == len(source_dataset) - 1:
+                    results = self.facodec.encode_batch(audio_batch)
+                    for (samp, ds_name, row_idx), (content, prosody, timbre) in zip(
+                        pending_entries, results
+                    ):
+                        entry = self._build_processed_entry(
+                            samp, ds_name, row_idx, content, prosody, timbre
+                        )
+                        processed_data.append(entry)
+                    audio_batch.clear()
+                    pending_entries.clear()
             except Exception as e:
-                # Log failure but continue processing
                 sample_id = sample.get("id", f"row_{idx}")
                 failures.append((sample_id, str(e)))
-                continue
         
-        # Report failures if any
         if failures:
-            print(f"\n⚠️  {len(failures)} samples failed to process:")
-            for sample_id, error in failures[:10]:  # Show first 10
+            print(f"\n  {len(failures)} samples failed to process:")
+            for sample_id, error in failures[:10]:
                 print(f"  - {sample_id}: {error}")
             if len(failures) > 10:
                 print(f"  ... and {len(failures) - 10} more")
         
-        # Create output dataset
         if not processed_data:
             raise RuntimeError("No samples were successfully processed")
         
-        # Build dataset from processed data
-        output_dataset = Dataset.from_list(processed_data)
-        
-        return output_dataset
+        return Dataset.from_list(processed_data)
     
-    def _process_sample(
-        self, 
-        sample: Dict[str, Any], 
-        dataset_name: str, 
-        row_idx: int
-    ) -> Optional[Dict[str, Any]]:
-        """Process a single sample through FACodec.
+    def _extract_audio_from_sample(self, sample: Dict[str, Any]) -> torch.Tensor:
+        """Extract and preprocess audio from a dataset sample.
         
-        Args:
-            sample: Source dataset sample dict
-            dataset_name: Name of source dataset
-            row_idx: Row index in source dataset
-        
-        Returns:
-            Processed sample dict or None if processing failed
+        Returns a 1D float tensor at 16kHz ready for FACodec encoding.
         """
-        # Get or generate sample ID
-        sample_id = sample.get("id", f"row_{row_idx}")
-        
-        # Extract audio
         audio_data = sample.get("audio")
         if audio_data is None:
             raise ValueError("Sample missing 'audio' field")
         
-        # Handle different audio formats
         if isinstance(audio_data, dict):
             audio_array = audio_data.get("array")
             sampling_rate = audio_data.get("sampling_rate", 16000)
@@ -200,41 +189,40 @@ class DatasetProcessor:
         else:
             raise ValueError(f"Unsupported audio format: {type(audio_data)}")
         
-        # Convert list to numpy array if needed (HF datasets returns lists)
         if isinstance(audio_array, list):
             audio_array = np.array(audio_array, dtype=np.float32)
         
         if audio_array is None or len(audio_array) == 0:
             raise ValueError("Empty audio array")
         
-        # Resample to 16kHz if needed
         if sampling_rate != 16000:
             audio_array = self._resample_audio(audio_array, sampling_rate, 16000)
             sampling_rate = 16000
         
-        # Convert to tensor and encode
-        audio_tensor = torch.from_numpy(audio_array).float()
-        
-        try:
-            content_indices, prosody_indices, timbre_indices = self.facodec.encode(audio_tensor)
-        except ValueError as e:
-            # FACodec encoding failed (e.g., empty audio after filtering)
-            raise ValueError(f"FACodec encoding failed: {e}") from e
-        
-        # Build processed sample
-        processed_sample = {
+        return torch.from_numpy(audio_array).float()
+
+    def _build_processed_entry(
+        self,
+        sample: Dict[str, Any],
+        dataset_name: str,
+        row_idx: int,
+        content_indices: List[int],
+        prosody_indices: List[int],
+        timbre_indices: List[int],
+    ) -> Dict[str, Any]:
+        """Construct a processed sample entry from encoding results."""
+        audio_data = sample.get("audio")
+        audio_array = audio_data.get("array") if isinstance(audio_data, dict) else audio_data
+
+        sample_id = sample.get("id", f"row_{row_idx}")
+        return {
             "dataset": dataset_name,
             "id": sample_id,
-            "audio": {
-                "array": audio_array,
-                "sampling_rate": sampling_rate
-            },
+            "audio": {"array": audio_array, "sampling_rate": 16000},
             "content_codebooks_idx": content_indices,
             "prosody_codebooks_idx": prosody_indices,
-            "timbre_codebooks_idx": timbre_indices
+            "timbre_codebooks_idx": timbre_indices,
         }
-        
-        return processed_sample
     
     def _resample_audio(
         self, 
@@ -295,7 +283,7 @@ class DatasetProcessor:
         # Save to parquet
         dataset.to_parquet(str(output_path))
         
-        print(f"✓ Saved dataset to {output_path}")
+        print(f"Saved dataset to {output_path}")
         
         return output_path
     
@@ -318,6 +306,6 @@ class DatasetProcessor:
         """
         try:
             dataset.push_to_hub(repo_id)
-            print(f"✓ Pushed dataset to https://huggingface.co/datasets/{repo_id}")
+            print(f"Pushed dataset to https://huggingface.co/datasets/{repo_id}")
         except Exception as e:
             raise RuntimeError(f"Failed to push to hub: {e}") from e

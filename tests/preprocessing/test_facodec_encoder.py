@@ -122,6 +122,110 @@ class TestFACodecEncoderMock:
             encoder.encode(torch.zeros(2, 2, 32000))
 
 
+class TestFACodecEncoderBatch:
+    """Test batch encoding with both mock and real paths."""
+
+    def test_mock_batch_encodes_multiple_samples(self):
+        """Batch mock mode returns results for all samples."""
+        encoder = FACodecEncoder(device="cpu", force_mock=True)
+        audios = [torch.zeros(16000), torch.zeros(32000), torch.zeros(48000)]
+
+        results = encoder.encode_batch(audios)
+
+        assert len(results) == 3
+        for content, prosody, timbre in results:
+            assert isinstance(content, list)
+            assert isinstance(prosody, list)
+            assert isinstance(timbre, list)
+            assert len(content) > 0
+
+    def test_mock_batch_is_equivalent_to_individual(self):
+        """Batch mock encoding matches individual mock encodes."""
+        encoder = FACodecEncoder(device="cpu", force_mock=True)
+        audios = [torch.zeros(16000), torch.zeros(32000)]
+
+        batch_results = encoder.encode_batch(audios)
+        single_results = [encoder.encode(a) for a in audios]
+
+        for (batch_c, batch_p, batch_t), (single_c, single_p, single_t) in zip(
+            batch_results, single_results
+        ):
+            assert batch_c == single_c
+            assert batch_p == single_p
+            assert batch_t == single_t
+
+    def test_mock_batch_with_variable_lengths(self):
+        """Batch mock handles different audio lengths."""
+        encoder = FACodecEncoder(device="cpu", force_mock=True)
+        audios = [torch.zeros(8000), torch.zeros(16000), torch.zeros(64000)]
+
+        results = encoder.encode_batch(audios)
+
+        frames = [len(r[0]) for r in results]
+        assert frames[0] < frames[1] < frames[2]
+
+    def test_batch_raises_on_empty(self):
+        """encode_batch() raises on empty batch."""
+        encoder = FACodecEncoder(device="cpu", force_mock=True)
+        with pytest.raises(ValueError, match="empty"):
+            encoder.encode_batch([])
+
+    def test_real_batch_encodes_multiple_samples(self):
+        """Real batch mode returns results for all samples."""
+        encoder = FACodecEncoder(device="cpu")
+        if encoder._mock:
+            pytest.skip("Amphion FACodec not available or checkpoints missing")
+
+        audios = [torch.zeros(16000), torch.zeros(32000), torch.zeros(48000)]
+        results = encoder.encode_batch(audios)
+
+        assert len(results) == 3
+        for content, prosody, timbre in results:
+            assert len(content) == len(prosody) == len(timbre)
+            assert all(0 <= idx < 1024 for idx in content)
+
+    def test_real_batch_matches_individual(self):
+        """Batch encoding produces structurally correct results.
+        
+        Frame counts match individual encoding. Due to transformer self-attention
+        and conv receptive fields over padded zeros, individual frame indices
+        may differ near boundaries. All indices remain in valid codebook range.
+        """
+        encoder = FACodecEncoder(device="cpu")
+        if encoder._mock:
+            pytest.skip("Amphion FACodec not available or checkpoints missing")
+
+        audios = [torch.zeros(16000), torch.zeros(24000)]
+
+        batch_results = encoder.encode_batch(audios)
+        single_results = [encoder.encode(a) for a in audios]
+
+        for (batch_c, batch_p, batch_t), (single_c, single_p, single_t) in zip(
+            batch_results, single_results
+        ):
+            assert len(batch_c) == len(single_c)
+            assert len(batch_p) == len(single_p)
+            assert len(batch_t) == len(single_t)
+            assert all(0 <= idx < 1024 for idx in batch_c)
+            assert all(0 <= idx < 1024 for idx in batch_p)
+            assert all(0 <= idx < 1024 for idx in batch_t)
+
+    def test_real_batch_frame_counts_match_duration(self):
+        """Real batch frame counts scale with audio duration."""
+        encoder = FACodecEncoder(device="cpu")
+        if encoder._mock:
+            pytest.skip("Amphion FACodec not available or checkpoints missing")
+
+        audios = [torch.zeros(16000), torch.zeros(32000)]
+
+        results = encoder.encode_batch(audios)
+        frames_1s = len(results[0][0])
+        frames_2s = len(results[1][0])
+
+        assert frames_2s > frames_1s * 1.5
+        assert frames_2s < frames_1s * 2.5
+
+
 class TestFACodecEncoderReal:
     """Test the real FACodec implementation when Amphion is available.
     

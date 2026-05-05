@@ -7,7 +7,7 @@ for testing purposes.
 
 import os
 import sys
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 import torch
 
 # Add vendor/Amphion to path so we can import Amphion models
@@ -192,6 +192,80 @@ class FACodecEncoder:
             return self._encode_mock(audio)
         else:
             return self._encode_real(audio)
+    
+    def encode_batch(self, audios: List[torch.Tensor]) -> List[Tuple[List[int], List[int], List[int]]]:
+        """Encode a batch of audio samples through FACodec.
+        
+        Pads variable-length audio to the same length, runs FACodec once on the
+        padded batch, then slices valid frames per sample based on original length.
+        
+        Args:
+            audios: List of 1D audio tensors, each shape [samples] at 16kHz.
+        
+        Returns:
+            List of (content_indices, prosody_indices, timbre_indices) tuples,
+            one per input audio sample.
+        
+        Raises:
+            ValueError: If the batch is empty.
+        """
+        if not audios:
+            raise ValueError("Batch cannot be empty")
+        
+        if self._mock:
+            return [self._encode_mock(audio) for audio in audios]
+        
+        return self._encode_real_batch(audios)
+    
+    def _encode_real_batch(
+        self, audios: List[torch.Tensor]
+    ) -> List[Tuple[List[int], List[int], List[int]]]:
+        """Batch encode using real FACodec model.
+        
+        Pads all samples to max length, runs through model once,
+        then slices valid frames per sample.
+        
+        Args:
+            audios: List of 1D audio tensors
+        
+        Returns:
+            List of (content, prosody, timbre) index tuples
+        """
+        lengths = [a.shape[0] for a in audios]
+        max_len = max(lengths)
+        batch_size = len(audios)
+        
+        batch = torch.zeros(batch_size, max_len, device=self.device)
+        for i, audio in enumerate(audios):
+            batch[i, :audio.shape[0]] = audio.to(self.device)
+        
+        batch = batch.unsqueeze(1)
+        
+        with torch.no_grad():
+            enc_out = self._encoder(batch)
+            _, vq_id, _, _, _ = self._decoder(enc_out, eval_vq=False, vq=True)
+        
+        hop_size = 200
+        
+        results = []
+        for i, length in enumerate(lengths):
+            num_frames = length // hop_size
+            vq_sample = vq_id[:, i, :num_frames].cpu()
+            
+            prosody_indices = []
+            content_indices = []
+            timbre_indices = []
+            
+            for frame_idx in range(num_frames):
+                prosody_indices.append(int(vq_sample[0, frame_idx].item()))
+                content_val = int((vq_sample[1, frame_idx].item() + vq_sample[2, frame_idx].item()) // 2)
+                content_indices.append(content_val)
+                timbre_val = int((vq_sample[3, frame_idx].item() + vq_sample[4, frame_idx].item() + vq_sample[5, frame_idx].item()) // 3)
+                timbre_indices.append(timbre_val)
+            
+            results.append((content_indices, prosody_indices, timbre_indices))
+        
+        return results
     
     def _encode_mock(self, audio: torch.Tensor) -> Tuple[list[int], list[int], list[int]]:
         """Generate deterministic mock indices for testing.
