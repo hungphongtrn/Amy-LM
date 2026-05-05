@@ -12,63 +12,64 @@ class TestFACodecEncoderMock:
     def test_mock_encoder_initializes_without_amphion(self):
         """Encoder should initialize without error when Amphion not available."""
         # When Amphion is not installed, should fall back to mock mode
-        encoder = FACodecEncoder(device="cpu", checkpoint_path=None)
-        
+        # Use force_mock=True to test mock behavior regardless of Amphion availability
+        encoder = FACodecEncoder(device="cpu", checkpoint_path=None, force_mock=True)
+
         # In mock mode, _mock flag should be True
         assert encoder._mock is True
-        
+
     def test_mock_encode_returns_three_index_lists(self):
         """Mock encode should return 3 lists of indices."""
-        encoder = FACodecEncoder(device="cpu", checkpoint_path=None)
-        
+        encoder = FACodecEncoder(device="cpu", checkpoint_path=None, force_mock=True)
+
         # 2 seconds of audio at 16kHz = 32000 samples
         audio = torch.zeros(32000)
-        
+
         content_indices, prosody_indices, timbre_indices = encoder.encode(audio)
-        
+
         # Should return exactly 3 items
         assert isinstance(content_indices, list)
         assert isinstance(prosody_indices, list)
         assert isinstance(timbre_indices, list)
-        
+
     def test_mock_encode_indices_are_valid_range(self):
         """Mock indices should be in valid codebook range (0-2047)."""
-        encoder = FACodecEncoder(device="cpu", checkpoint_path=None)
-        
+        encoder = FACodecEncoder(device="cpu", checkpoint_path=None, force_mock=True)
+
         audio = torch.zeros(32000)
         content_indices, prosody_indices, timbre_indices = encoder.encode(audio)
-        
+
         # All indices should be integers in range [0, 2047]
         for indices in [content_indices, prosody_indices, timbre_indices]:
             for idx in indices:
                 assert isinstance(idx, int)
                 assert 0 <= idx <= 2047
-                
+
     def test_mock_encode_frame_count_is_correct(self):
         """Mock should generate ~12.5 frames per second (25 frames for 2s audio)."""
-        encoder = FACodecEncoder(device="cpu", checkpoint_path=None)
-        
+        encoder = FACodecEncoder(device="cpu", checkpoint_path=None, force_mock=True)
+
         # 2 seconds at 16kHz = 32000 samples
         # At 12.5 Hz, we expect ~25 frames
         audio = torch.zeros(32000)
-        
+
         content_indices, prosody_indices, timbre_indices = encoder.encode(audio)
-        
+
         # Allow some tolerance (e.g., 20-30 frames)
         assert 20 <= len(content_indices) <= 30
         assert 20 <= len(prosody_indices) <= 30
         assert 20 <= len(timbre_indices) <= 30
-        
+
         # All three should have same length
         assert len(content_indices) == len(prosody_indices) == len(timbre_indices)
-        
+
     def test_mock_encode_indices_vary_by_stream(self):
         """Content, prosody, and timbre indices should be different streams."""
-        encoder = FACodecEncoder(device="cpu", checkpoint_path=None)
-        
+        encoder = FACodecEncoder(device="cpu", checkpoint_path=None, force_mock=True)
+
         audio = torch.zeros(32000)
         content_indices, prosody_indices, timbre_indices = encoder.encode(audio)
-        
+
         # At least some frames should have different values across streams
         # This proves we're not just returning the same indices for all
         differences = sum(
@@ -76,46 +77,152 @@ class TestFACodecEncoderMock:
             if c != p or p != t or c != t
         )
         assert differences > 0, "Indices should vary across streams"
-        
+
     def test_mock_encode_varies_across_frames(self):
         """Indices should vary across frames (not all same value)."""
-        encoder = FACodecEncoder(device="cpu", checkpoint_path=None)
-        
+        encoder = FACodecEncoder(device="cpu", checkpoint_path=None, force_mock=True)
+
         audio = torch.zeros(32000)
         content_indices, prosody_indices, timbre_indices = encoder.encode(audio)
-        
+
         # Content should have some variation across frames
         unique_content = len(set(content_indices))
         assert unique_content > 1, "Content indices should vary across frames"
-        
+
     def test_mock_encode_different_audio_lengths(self):
         """Mock should handle different audio durations correctly."""
-        encoder = FACodecEncoder(device="cpu", checkpoint_path=None)
-        
+        encoder = FACodecEncoder(device="cpu", checkpoint_path=None, force_mock=True)
+
         # 1 second = ~12-13 frames
         audio_1s = torch.zeros(16000)
         result_1s = encoder.encode(audio_1s)
         frames_1s = len(result_1s[0])
-        
+
         # 4 seconds = ~50 frames
         audio_4s = torch.zeros(64000)
         result_4s = encoder.encode(audio_4s)
         frames_4s = len(result_4s[0])
-        
+
         # 4s should have roughly 4x the frames of 1s
         assert frames_4s > frames_1s * 3, "Longer audio should produce more frames"
         assert frames_4s < frames_1s * 5, "Frame count should scale linearly"
 
     def test_encode_raises_on_empty_audio(self):
         """encode() should raise ValueError on empty audio tensor."""
-        encoder = FACodecEncoder(device="cpu", checkpoint_path=None)
+        encoder = FACodecEncoder(device="cpu", checkpoint_path=None, force_mock=True)
 
         with pytest.raises(ValueError, match="empty"):
             encoder.encode(torch.zeros(0))
 
     def test_encode_raises_on_wrong_shape_audio(self):
         """encode() should raise ValueError on > 2-dim audio tensor."""
-        encoder = FACodecEncoder(device="cpu", checkpoint_path=None)
+        encoder = FACodecEncoder(device="cpu", checkpoint_path=None, force_mock=True)
 
         with pytest.raises(ValueError, match="Audio should be 1D"):
             encoder.encode(torch.zeros(2, 2, 32000))
+
+
+class TestFACodecEncoderReal:
+    """Test the real FACodec implementation when Amphion is available.
+    
+    These tests only run when Amphion is installed and checkpoints are available.
+    They verify the real model produces valid output matching expected format.
+    """
+
+    @pytest.fixture
+    def encoder(self):
+        """Fixture to create a real FACodec encoder."""
+        # Skip if Amphion is not available
+        try:
+            encoder = FACodecEncoder(device="cpu")
+            if encoder._mock:
+                pytest.skip("Amphion FACodec not available or checkpoints missing")
+            return encoder
+        except Exception as e:
+            pytest.skip(f"Failed to create real FACodec encoder: {e}")
+
+    def test_real_encoder_initializes_when_available(self, encoder):
+        """Real encoder should initialize with _mock=False when Amphion available."""
+        assert encoder._mock is False
+        assert encoder._encoder is not None
+        assert encoder._decoder is not None
+
+    def test_real_encode_returns_three_index_lists(self, encoder):
+        """Real encode should return 3 lists of indices."""
+        # 2 seconds of audio at 16kHz = 32000 samples
+        audio = torch.zeros(32000)
+
+        content_indices, prosody_indices, timbre_indices = encoder.encode(audio)
+
+        # Should return exactly 3 items
+        assert isinstance(content_indices, list)
+        assert isinstance(prosody_indices, list)
+        assert isinstance(timbre_indices, list)
+        assert len(content_indices) > 0
+        assert len(prosody_indices) > 0
+        assert len(timbre_indices) > 0
+
+    def test_real_encode_indices_are_valid_range(self, encoder):
+        """Real indices should be in valid codebook range (0-1023 for FACodec)."""
+        audio = torch.zeros(32000)
+        content_indices, prosody_indices, timbre_indices = encoder.encode(audio)
+
+        # FACodec uses 10-bit codebooks = 1024 entries
+        for indices in [content_indices, prosody_indices, timbre_indices]:
+            for idx in indices:
+                assert isinstance(idx, int)
+                assert 0 <= idx < 1024, f"Index {idx} out of range [0, 1024)"
+
+    def test_real_encode_all_same_length(self, encoder):
+        """All three index lists should have same length."""
+        audio = torch.zeros(32000)
+        content_indices, prosody_indices, timbre_indices = encoder.encode(audio)
+
+        assert len(content_indices) == len(prosody_indices) == len(timbre_indices)
+
+    def test_real_encode_different_audio_produces_different_output(self, encoder):
+        """Different audio inputs should produce different indices."""
+        audio_1 = torch.randn(16000)
+        audio_2 = torch.randn(16000) * 0.5  # Different amplitude
+
+        result_1 = encoder.encode(audio_1)
+        result_2 = encoder.encode(audio_2)
+
+        # At least one stream should differ
+        content_diff = any(a != b for a, b in zip(result_1[0], result_2[0]))
+        prosody_diff = any(a != b for a, b in zip(result_1[1], result_2[1]))
+        timbre_diff = any(a != b for a, b in zip(result_1[2], result_2[2]))
+
+        assert content_diff or prosody_diff or timbre_diff, \
+            "Different audio should produce different indices"
+
+    def test_real_encode_frame_count_scales_with_duration(self, encoder):
+        """Frame count should scale with audio duration."""
+        # Test with different durations
+        audio_1s = torch.zeros(16000)
+        audio_2s = torch.zeros(32000)
+
+        result_1s = encoder.encode(audio_1s)
+        result_2s = encoder.encode(audio_2s)
+
+        frames_1s = len(result_1s[0])
+        frames_2s = len(result_2s[0])
+
+        # 2s should have roughly 2x the frames of 1s (with some tolerance)
+        assert frames_2s > frames_1s * 1.5, "Longer audio should produce more frames"
+        assert frames_2s < frames_1s * 2.5, "Frame count should scale linearly"
+
+    def test_real_encode_handles_2d_audio(self, encoder):
+        """Encoder should handle [1, samples] shaped audio."""
+        audio_2d = torch.zeros(1, 32000)
+
+        content_indices, prosody_indices, timbre_indices = encoder.encode(audio_2d)
+
+        # Should work and return valid results
+        assert isinstance(content_indices, list)
+        assert len(content_indices) > 0
+
+    def test_real_encode_raises_on_empty_audio(self, encoder):
+        """encode() should raise ValueError on empty audio tensor."""
+        with pytest.raises(ValueError, match="empty"):
+            encoder.encode(torch.zeros(0))

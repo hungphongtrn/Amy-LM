@@ -23,7 +23,7 @@ class TestDatasetProcessor:
     @pytest.fixture
     def facodec_encoder(self):
         """Create a FACodecEncoder in mock mode for testing."""
-        return FACodecEncoder(device="cpu")
+        return FACodecEncoder(device="cpu", force_mock=True)
 
     @pytest.fixture
     def temp_output_dir(self, tmp_path):

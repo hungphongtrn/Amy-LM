@@ -26,7 +26,7 @@ class TestEndToEndPipeline:
     @pytest.fixture
     def facodec_encoder(self):
         """Create FACodecEncoder in mock mode."""
-        encoder = FACodecEncoder(device="cpu")
+        encoder = FACodecEncoder(device="cpu", force_mock=True)
         # Verify we're in mock mode for offline testing
         assert encoder._mock is True
         return encoder

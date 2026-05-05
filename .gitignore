@@ -14,3 +14,4 @@ data/
 .data/
 .DS_STORE
 *.egg-info/
+vendor/
