@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from src.preprocessing.facodec_encoder import FACodecEncoder
+from preprocessing.facodec_encoder import FACodecEncoder
 
 
 class TestFACodecEncoderMock:
@@ -105,3 +105,17 @@ class TestFACodecEncoderMock:
         # 4s should have roughly 4x the frames of 1s
         assert frames_4s > frames_1s * 3, "Longer audio should produce more frames"
         assert frames_4s < frames_1s * 5, "Frame count should scale linearly"
+
+    def test_encode_raises_on_empty_audio(self):
+        """encode() should raise ValueError on empty audio tensor."""
+        encoder = FACodecEncoder(device="cpu", checkpoint_path=None)
+
+        with pytest.raises(ValueError, match="empty"):
+            encoder.encode(torch.zeros(0))
+
+    def test_encode_raises_on_wrong_shape_audio(self):
+        """encode() should raise ValueError on > 2-dim audio tensor."""
+        encoder = FACodecEncoder(device="cpu", checkpoint_path=None)
+
+        with pytest.raises(ValueError, match="Audio should be 1D"):
+            encoder.encode(torch.zeros(2, 2, 32000))
