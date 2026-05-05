@@ -1,6 +1,6 @@
-# Issue #6: MUStARD++ Preprocessing Pipeline
+# Issue #6: Preprocessing Pipeline
 
-> Implementation plan for preprocessing MUStARD++ dataset with FACodec + MOSS-Audio encoders.
+> Implementation plan for running FACodec offline on speech datasets and pushing the results to HuggingFace Hub.
 
 ## Status
 
@@ -8,54 +8,58 @@
 
 ## Quick Summary
 
-This implements **Issue #6**: A preprocessing pipeline that downloads MUStARD++ dataset, runs FACodec and MOSS-Audio encoders offline, and saves aligned feature tuples as `.pt` files.
+This implements **Issue #6**: A preprocessing pipeline that loads any HuggingFace speech dataset, runs FACodec to extract content, prosody, and timbre codebook indices in a single forward pass, and pushes the result as a reusable HuggingFace dataset.
 
-**Output per utterance:**
+**Output per utterance (HF Dataset row):**
 ```python
 {
-    'semantic_frames': (N_sem, 2560),       # MOSS-Audio at 12.5 Hz
-    'prosody_indices': (N_sem, 1),          # FACodec prosody (pooled)
-    'prosody_indices_raw': (N_pros,),       # Original 80 Hz
-    'timbre_vector': (256,),                # Global timbre
-    'label': int,                           # Sarcasm: 0 or 1
-    'alignment_info': {...},                # Frame counts, pooling ratio
+    'dataset': str,                    # source HF repo name
+    'id': str,                         # unique ID from source dataset
+    'audio': {                         # HF Audio feature
+        'array': array,
+        'sampling_rate': int,
+    },
+    'content_codebooks_idx': list[int],  # FACodec content head indices
+    'prosody_codebooks_idx': list[int],  # FACodec prosody head indices
+    'timbre_codebooks_idx': list[int],   # FACodec timbre head indices
 }
 ```
 
 ## Start Here
 
-Read **[phase-01-preprocessing.md](./phase-01-preprocessing.md)** for the 10-task implementation plan.
+Read **[phase-01-preprocessing.md](./phase-01-preprocessing.md)** for the 7-task implementation plan.
 
 ## What This Implements
 
-- [ ] MUStARD++ dataset downloaded from HuggingFace
-- [ ] FACodec encoder: prosody indices (80 Hz) + timbre vector (256-dim)
-- [ ] MOSS-Audio encoder: semantic frames (12.5 Hz, 2560-dim)
-- [ ] Temporal alignment via pooling (80 Hz → 12.5 Hz)
-- [ ] `.pt` files per utterance with all features + labels
+- [ ] FACodec encoder wrapper: content + prosody + timbre indices in single pass
+- [ ] Generic HF dataset loader (not tied to MUStARD++)
+- [ ] Batch processor with progress tracking and failure handling
+- [ ] HF Dataset assembly and push to Hub
+- [ ] Indices-only storage (vectors reconstructed later from codebook lookup tables)
 - [ ] Summary report with statistics and failures
 
 ## Key Decisions
 
 See [decisions.md](./decisions.md) for:
-- Offline preprocessing (encoders run once, not in training loop)
-- Pooling strategy (average pooling 6:1 for 80 Hz → 12.5 Hz)
-- Mock fallbacks (tests work without Amphion/transformers installed)
+- FACodec as single encoder for all 3 codebooks (no MOSS-Audio)
+- Indices-only storage (RAM-safe for large datasets)
+- Generic dataset loader (not MUStARD-specific)
+- HF Dataset as output format (not `.pt` files)
 
 ## Execution
 
-Implement the 10 tasks sequentially (test-first):
+Implement the 7 tasks sequentially (test-first):
 
 ```bash
-# Task order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10
+# Task order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 # Each task: write failing test → implement → verify pass → commit
 ```
 
 Validation:
 ```bash
-python scripts/preprocess_mustard.py --split test --max-utterances 5
+python scripts/preprocess.py --dataset hungphongtrn/mustard_plus_plus --split test --max-samples 5
 ```
 
 ---
 
-*This plan implements GitHub Issue #6: MUStARD++ Preprocessing Pipeline*
+*This plan implements GitHub Issue #6: Preprocessing Pipeline*

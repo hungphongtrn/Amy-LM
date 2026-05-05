@@ -1,54 +1,54 @@
-# Issue #6: MUStARD++ Preprocessing Pipeline
+# Issue #6: Preprocessing Pipeline
 
-Implementation plan for downloading MUStARD++ dataset and extracting aligned features using FACodec and MOSS-Audio encoders.
+Implementation plan for running FACodec offline on speech datasets and pushing the results to HuggingFace Hub as a reusable dataset.
 
 ## Acceptance Criteria
 
-Per Issue #6, the implementation must satisfy:
-
-- [ ] MUStARD++ dataset downloaded and accessible
-- [ ] FACodec encoder loads from Amphion checkpoint, extracts prosody indices (80 Hz) and timbre vector per utterance
-- [ ] MOSS-Audio encoder loads, extracts semantic frames (12.5 Hz) per utterance
-- [ ] Temporal alignment logged: prosody frame count, semantic frame count, pooling ratio per file
-- [ ] `.pt` files saved per utterance with all four fields
-- [ ] A summary report: total utterances processed, avg frame counts, any failures
+- [ ] FACodec encoder loads from Amphion checkpoint, extracts content, prosody, and timbre codebook indices per utterance in a single forward pass
+- [ ] Pipeline processes any HuggingFace audio dataset (not tied to MUStARD++ specifically)
+- [ ] Output is a HuggingFace dataset with the required columns (see below)
+- [ ] Dataset pushed to HuggingFace Hub for reuse in training
+- [ ] Only codebook indices stored (not full vectors) — vectors are reconstructed later from codebook lookup tables
 
 ## Output Format
 
-Each `.pt` file contains:
+Each row in the HuggingFace dataset:
 
 ```python
 {
-    'utterance_id': str,
-    'semantic_frames': (N_sem, 2560),       # MOSS-Audio at 12.5 Hz
-    'prosody_indices': (N_sem, 1),          # FACodec prosody pooled to match semantic
-    'prosody_indices_raw': (N_pros,),         # Original FACodec at 80 Hz
-    'timbre_vector': (256,),                # Global timbre from FACodec
-    'label': int,                           # 0 or 1 (sarcasm)
-    'duration_sec': float,
-    'alignment_info': {
-        'prosody_frames': int,      # Original count at 80 Hz
-        'semantic_frames': int,     # Count at 12.5 Hz
-        'pooling_ratio': float,     # N_pros / N_sem
+    'dataset': str,       # source HF repo name (e.g., "hungphongtrn/mustard_plus_plus")
+    'id': str,            # unique ID from source dataset
+    'audio': {            # HF Audio feature
+        'array': array,   # waveform
+        'sampling_rate': int,
     },
-    'metadata': dict
+    'content_codebooks_idx': list[int],   # FACodec content head indices
+    'prosody_codebooks_idx': list[int],   # FACodec prosody head indices
+    'timbre_codebooks_idx': list[int],    # FACodec timbre head indices
 }
 ```
+
+Columns no longer needed (was in old plan):
+- `content_codebooks` / `prosody_codebooks` / `timbre_codebooks` — vectors are reconstructed from indices + codebook lookup tables at training time
 
 ## Files to Create
 
 | File | Responsibility |
 |------|----------------|
 | `src/preprocessing/__init__.py` | Module marker |
-| `src/preprocessing/mustard_downloader.py` | Download/cache MUStARD++ from HuggingFace |
-| `src/preprocessing/facodec_encoder.py` | FACodec wrapper (prosody + timbre extraction) |
-| `src/preprocessing/moss_encoder.py` | MOSS-Audio wrapper (semantic frames) |
-| `src/preprocessing/alignment.py` | Temporal pooling: 80 Hz → 12.5 Hz |
-| `src/preprocessing/batch_processor.py` | Orchestration + `.pt` file generation |
+| `src/preprocessing/facodec_encoder.py` | FACodec wrapper: content + prosody + timbre indices |
+| `src/preprocessing/dataset_processor.py` | Iterates HF dataset, encodes each sample, builds output HF dataset |
 | `src/preprocessing/reporting.py` | Summary report generation |
-| `scripts/preprocess_mustard.py` | CLI entry point |
-| `tests/preprocessing/test_*.py` | Unit tests per module |
+| `scripts/preprocess.py` | CLI entry point |
+| `tests/preprocessing/test_facodec_encoder.py` | Unit tests for FACodec wrapper |
+| `tests/preprocessing/test_dataset_processor.py` | Unit tests for batch processor |
 | `tests/preprocessing/test_integration.py` | End-to-end pipeline test |
+
+Removed from old plan:
+- ~~`src/preprocessing/mustard_downloader.py`~~ — use generic HF `datasets` library instead
+- ~~`src/preprocessing/moss_encoder.py`~~ — FACodec handles all 3 codebooks
+- ~~`src/preprocessing/alignment.py`~~ — no cross-encoder alignment needed
+- ~~`src/preprocessing/batch_processor.py`~~ — consolidated into `dataset_processor.py`
 
 ## Implementation Tasks
 
@@ -79,110 +79,85 @@ touch tests/preprocessing/__init__.py
 
 ---
 
-### Task 2: MUStARD++ Downloader
-
-**Files:** `src/preprocessing/mustard_downloader.py`, `tests/preprocessing/test_mustard_downloader.py`
-
-Interface:
-- `MustardDownloader(cache_dir: Path)` — dataset: `hungphongtrn/mustard_plus_plus`
-- `download(split: str) -> Path` — returns audio directory path
-- `iter_utterances(split: str) -> Iterator[Tuple[utt_id, audio_array, sr, label, metadata]]`
-
----
-
-### Task 3: FACodec Encoder
+### Task 2: FACodec Encoder Wrapper
 
 **Files:** `src/preprocessing/facodec_encoder.py`, `tests/preprocessing/test_facodec_encoder.py`
 
 Interface:
 - `FACodecEncoder(device: str, checkpoint_path: Optional[str])`
-- `encode(audio: Tensor) -> Tuple[prosody_indices, timbre_vector]`
-- Prosody: ~80 Hz, discrete indices (vocab size 1024)
-- Timbre: 256-dim global vector per utterance
-- Mock fallback if Amphion not installed
+- `encode(audio: Tensor) -> Tuple[content_indices, prosody_indices, timbre_indices]`
+  - Single forward pass through FACodec
+  - Returns only indices (list[int] or Tensor), not vectors
+  - Content: discrete indices from content head (vocab size ~2048)
+  - Prosody: discrete indices from prosody head (vocab size ~2048)
+  - Timbre: discrete indices from timbre head (vocab size ~2048)
+- Mock fallback if Amphion not installed (for tests)
+- Frame rate: ~12.5 Hz (native FACodec output)
 
 ---
 
-### Task 4: MOSS-Audio Encoder
+### Task 3: Dataset Processor
 
-**Files:** `src/preprocessing/moss_encoder.py`, `tests/preprocessing/test_moss_encoder.py`
+**Files:** `src/preprocessing/dataset_processor.py`, `tests/preprocessing/test_dataset_processor.py`
 
 Interface:
-- `MOSSAudioEncoder(device: str, model_size: str = "4B")`
-- `encode(audio: Tensor) -> semantic_frames: (batch, N_frames, 2560)`
-- Frame rate: 12.5 Hz
-- Mock fallback if transformers not available
+- `DatasetProcessor(facodec: FACodecEncoder, output_dir: Path, device: str)`
+- `process_dataset(dataset_name: str, split: str, max_samples: Optional[int] = None) -> Dataset`
+  - Loads dataset from HF Hub using `datasets.load_dataset(dataset_name, split=split)`
+  - Iterates samples, runs FACodec on each audio
+  - Builds HF Dataset with all required columns
+  - Reports failures without stopping
+- `save(dataset: Dataset, repo_id: str)` — saves to disk as parquet
+- `push_to_hub(dataset: Dataset, repo_id: str)` — pushes to HF Hub
 
 ---
 
-### Task 5: Temporal Alignment
-
-**Files:** `src/preprocessing/alignment.py`, `tests/preprocessing/test_alignment.py`
-
-Interface:
-- `TemporalAligner(prosody_rate=80.0, semantic_rate=12.5)`
-- `pool_prosody_to_semantic(prosody_indices, target_frames) -> pooled_indices`
-- Uses adaptive average pooling over time dimension
-- `AlignmentInfo` dataclass for logging
-
----
-
-### Task 6: Batch Processor
-
-**Files:** `src/preprocessing/batch_processor.py`, `tests/preprocessing/test_batch_processor.py`
-
-Interface:
-- `BatchProcessor(facodec, moss, aligner, output_dir, device)`
-- `process_utterance(utt_id, audio, sr, label, metadata) -> Optional[Path]`
-- `process_dataset(split, max_utterances) -> ProcessingSummary`
-- Saves `.pt` files with all required fields per Issue #6
-
----
-
-### Task 7: Summary Reporting
+### Task 4: Summary Reporting
 
 **Files:** `src/preprocessing/reporting.py`, `tests/preprocessing/test_reporting.py`
 
 Interface:
-- `ProcessingSummary` — tracks total utterances, frame counts, failures
-- `generate_report(summary, output_path)` — JSON summary with:
-  - Total utterances processed
-  - Average prosody frames per utterance
-  - Average semantic frames per utterance
-  - Average pooling ratio
-  - Failed utterances list
+- `ProcessingSummary` dataclass — tracks:
+  - Total utterances processed / failed
+  - Average content / prosody / timbre frame counts
+  - Duration histogram
+  - Failed utterance IDs + error messages
+- `generate_report(summary, output_path)` — outputs JSON report
 
 ---
 
-### Task 8: CLI Entry Point
+### Task 5: CLI Entry Point
 
-**File:** `scripts/preprocess_mustard.py`
+**File:** `scripts/preprocess.py`
 
 CLI:
 ```bash
-python scripts/preprocess_mustard.py \
-    --split {train,validation,test,all} \
-    --output-dir data/mustard_pp_processed \
-    [--max-utterances N] \
+python scripts/preprocess.py \
+    --dataset hungphongtrn/mustard_plus_plus \
+    --split train \
+    --output-repo hungphongtrn/mustard_facodec \
+    [--max-samples N] \
     [--device cuda/cpu] \
-    [--cache-dir ~/.cache/mustard]
+    [--output-dir data/processed]
 ```
+
+Supports processing multiple datasets by running the script multiple times with different `--dataset` values.
 
 ---
 
-### Task 9: Integration Test
+### Task 6: Integration Test
 
 **File:** `tests/preprocessing/test_integration.py`
 
 Validates:
-- Mock audio (2 sec) processes end-to-end
-- Output `.pt` file exists and loads correctly
-- All Issue #6 required fields present with correct shapes
-- Alignment info logged correctly
+- Mock audio (2 sec) processes end-to-end through FACodec mock
+- Output HF dataset has all required columns with correct dtypes
+- Indices are integers within valid codebook range
+- Dataset can be round-tripped through save/load
 
 ---
 
-### Task 10: Run Full Test Suite
+### Task 7: Run Full Test Suite
 
 ```bash
 uv run pytest tests/preprocessing/ -v --tb=short
@@ -194,20 +169,14 @@ uv run pytest tests/preprocessing/ -v --tb=short
 
 Issue #6 acceptance criteria:
 
-- [ ] MUStARD++ dataset downloaded and accessible
-- [ ] FACodec encoder loads, extracts prosody indices (80 Hz) + timbre vector
-- [ ] MOSS-Audio encoder loads, extracts semantic frames (12.5 Hz)
-- [ ] Temporal alignment logged with frame counts and pooling ratio
-- [ ] `.pt` files saved per utterance with `semantic_frames`, `prosody_indices`, `timbre_vector`, `label`
-- [ ] Summary report generated with totals, averages, and failures
+- [ ] FACodec encoder loads, extracts content + prosody + timbre indices in single pass
+- [ ] Pipeline works with any HF audio dataset
+- [ ] Output HF dataset has columns: `dataset`, `id`, `audio`, `content_codebooks_idx`, `prosody_codebooks_idx`, `timbre_codebooks_idx`
+- [ ] Only indices stored (no vectors) — RAM-safe for large datasets
+- [ ] Dataset pushed to HuggingFace Hub
+- [ ] Summary report generated with totals, averages, failures
 
 Run validation:
 ```bash
-python scripts/preprocess_mustard.py --split test --max-utterances 5
+python scripts/preprocess.py --dataset hungphongtrn/mustard_plus_plus --split test --max-samples 5
 ```
-
----
-
-## Implementation Reference
-
-Full implementation details: `OLD-full-plan.md` (lines 117-1865)

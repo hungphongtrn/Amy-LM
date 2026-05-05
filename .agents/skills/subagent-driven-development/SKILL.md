@@ -1,402 +1,281 @@
 ---
+description: Use when executing implementation plans with independent tasks in the current session
+metadata:
+    github-path: skills/engineering/subagent-driven-development
+    github-ref: refs/heads/main
+    github-repo: https://github.com/hungphongtrn/agent-skills
+    github-tree-sha: 56edd5c23d7e1b61039f09c13a2229f958d82da9
 name: subagent-driven-development
-
-description: Use when executing implementation plans with independent tasks. Dispatches fresh delegate_task per task with two-stage review (spec compliance then code quality).
 ---
 # Subagent-Driven Development
 
-## Overview
+Execute plan by dispatching fresh subagent per task, with two-stage review after each: spec compliance review first, then code quality review.
 
-Execute implementation plans by dispatching fresh subagents per task with systematic two-stage review.
+**Why subagents:** You delegate tasks to specialized agents with isolated context. By precisely crafting their instructions and context, you ensure they stay focused and succeed at their task. They should never inherit your session's context or history — you construct exactly what they need. This also preserves your own context for coordination work.
 
-**Core principle:** Fresh subagent per task + two-stage review (spec then quality) = high quality, fast iteration.
+**Core principle:** Fresh subagent per task + two-stage review (spec then quality) = high quality, fast iteration
 
 ## When to Use
 
-Use this skill when:
+```dot
+digraph when_to_use {
+    "Have implementation plan?" [shape=diamond];
+    "Tasks mostly independent?" [shape=diamond];
+    "Stay in this session?" [shape=diamond];
+    "subagent-driven-development" [shape=box];
+    "executing-plans" [shape=box];
+    "Manual execution or brainstorm first" [shape=box];
 
-- You have an implementation plan (from writing-plans skill or user requirements)
-- Tasks are mostly independent
-- Quality and spec compliance are important
-- You want automated review between tasks
+    "Have implementation plan?" -> "Tasks mostly independent?" [label="yes"];
+    "Have implementation plan?" -> "Manual execution or brainstorm first" [label="no"];
+    "Tasks mostly independent?" -> "Stay in this session?" [label="yes"];
+    "Tasks mostly independent?" -> "Manual execution or brainstorm first" [label="no - tightly coupled"];
+    "Stay in this session?" -> "subagent-driven-development" [label="yes"];
+    "Stay in this session?" -> "executing-plans" [label="no - parallel session"];
+}
+```
 
-**vs. manual execution:**
-
-- Fresh context per task (no confusion from accumulated state)
-- Automated review process catches issues early
-- Consistent quality checks across all tasks
-- Subagents can ask questions before starting work
+**vs. Executing Plans (parallel session):**
+- Same session (no context switch)
+- Fresh subagent per task (no context pollution)
+- Two-stage review after each task: spec compliance first, then code quality
+- Faster iteration (no human-in-loop between tasks)
 
 ## The Process
 
-### 1. Read and Parse Plan
+```dot
+digraph process {
+    rankdir=TB;
 
-Read the plan file. Extract ALL tasks with their full text and context upfront. Create a todo list:
+    subgraph cluster_per_task {
+        label="Per Task";
+        "Dispatch implementer subagent (./implementer-prompt.md)" [shape=box];
+        "Implementer subagent asks questions?" [shape=diamond];
+        "Answer questions, provide context" [shape=box];
+        "Implementer subagent implements, tests, commits, self-reviews" [shape=box];
+        "Dispatch spec reviewer subagent (./spec-reviewer-prompt.md)" [shape=box];
+        "Spec reviewer subagent confirms code matches spec?" [shape=diamond];
+        "Implementer subagent fixes spec gaps" [shape=box];
+        "Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)" [shape=box];
+        "Code quality reviewer subagent approves?" [shape=diamond];
+        "Implementer subagent fixes quality issues" [shape=box];
+        "Mark task complete in TodoWrite" [shape=box];
+    }
 
-```python
+    "Read plan, extract all tasks with full text, note context, create TodoWrite" [shape=box];
+    "More tasks remain?" [shape=diamond];
+    "Dispatch final code reviewer subagent for entire implementation" [shape=box];
+    "Finalize development branch" [shape=box style=filled fillcolor=lightgreen];
 
-# Read the plan
-
-read_file("docs/plans/feature-plan.md")
-
-
-# Create todo list with all tasks
-
-todo([
-
-    {"id": "task-1", "content": "Create User model with email field", "status": "pending"},
-
-    {"id": "task-2", "content": "Add password hashing utility", "status": "pending"},
-
-    {"id": "task-3", "content": "Create login endpoint", "status": "pending"},
-
-])
-
+    "Read plan, extract all tasks with full text, note context, create TodoWrite" -> "Dispatch implementer subagent (./implementer-prompt.md)";
+    "Dispatch implementer subagent (./implementer-prompt.md)" -> "Implementer subagent asks questions?";
+    "Implementer subagent asks questions?" -> "Answer questions, provide context" [label="yes"];
+    "Answer questions, provide context" -> "Dispatch implementer subagent (./implementer-prompt.md)";
+    "Implementer subagent asks questions?" -> "Implementer subagent implements, tests, commits, self-reviews" [label="no"];
+    "Implementer subagent implements, tests, commits, self-reviews" -> "Dispatch spec reviewer subagent (./spec-reviewer-prompt.md)";
+    "Dispatch spec reviewer subagent (./spec-reviewer-prompt.md)" -> "Spec reviewer subagent confirms code matches spec?";
+    "Spec reviewer subagent confirms code matches spec?" -> "Implementer subagent fixes spec gaps" [label="no"];
+    "Implementer subagent fixes spec gaps" -> "Dispatch spec reviewer subagent (./spec-reviewer-prompt.md)" [label="re-review"];
+    "Spec reviewer subagent confirms code matches spec?" -> "Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)" [label="yes"];
+    "Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)" -> "Code quality reviewer subagent approves?";
+    "Code quality reviewer subagent approves?" -> "Implementer subagent fixes quality issues" [label="no"];
+    "Implementer subagent fixes quality issues" -> "Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)" [label="re-review"];
+    "Code quality reviewer subagent approves?" -> "Mark task complete in TodoWrite" [label="yes"];
+    "Mark task complete in TodoWrite" -> "More tasks remain?";
+    "More tasks remain?" -> "Dispatch implementer subagent (./implementer-prompt.md)" [label="yes"];
+    "More tasks remain?" -> "Dispatch final code reviewer subagent for entire implementation" [label="no"];
+    "Dispatch final code reviewer subagent for entire implementation" -> "Finalize development branch";
+}
 ```
 
-**Key:** Read the plan ONCE. Extract everything. Don't make subagents read the plan file — provide the full task text directly in context.
+## Model Selection
 
-### 2. Per-Task Workflow
+Use the least powerful model that can handle each role to conserve cost and increase speed.
 
-For EACH task in the plan:
+**Mechanical implementation tasks** (isolated functions, clear specs, 1-2 files): use a fast, cheap model. Most implementation tasks are mechanical when the plan is well-specified.
 
-#### Step 1: Dispatch Implementer Subagent
+**Integration and judgment tasks** (multi-file coordination, pattern matching, debugging): use a standard model.
 
-Spawn a subagent to do the work with:
+**Architecture, design, and review tasks**: use the most capable available model.
 
-**goal:** Implement Task 1: Create User model with email and password_hash fields
+**Task complexity signals:**
+- Touches 1-2 files with a complete spec → cheap model
+- Touches multiple files with integration concerns → standard model
+- Requires design judgment or broad codebase understanding → most capable model
 
-**description:**
+## Handling Implementer Status
 
-TASK FROM PLAN:
+Implementer subagents report one of four statuses. Handle each appropriately:
 
-- Create: src/models/user.py
-- Add User class with email (str) and password_hash (str) fields
-- Use bcrypt for password hashing
-- Include __repr__ for debugging
+**DONE:** Proceed to spec compliance review.
 
-FOLLOW TDD:
+**DONE_WITH_CONCERNS:** The implementer completed the work but flagged doubts. Read the concerns before proceeding. If the concerns are about correctness or scope, address them before review. If they're observations (e.g., "this file is getting large"), note them and proceed to review.
 
-1. Write failing test in tests/models/test_user.py
-2. Run: pytest tests/models/test_user.py -v (verify FAIL)
-3. Write minimal implementation
-4. Run: pytest tests/models/test_user.py -v (verify PASS)
-5. Run: pytest tests/ -q (verify no regressions)
-6. Commit: git add -A && git commit -m "feat: add User model with password hashing"
+**NEEDS_CONTEXT:** The implementer needs information that wasn't provided. Provide the missing context and re-dispatch.
 
-PROJECT CONTEXT:
+**BLOCKED:** The implementer cannot complete the task. Assess the blocker:
+1. If it's a context problem, provide more context and re-dispatch with the same model
+2. If the task requires more reasoning, re-dispatch with a more capable model
+3. If the task is too large, break it into smaller pieces
+4. If the plan itself is wrong, escalate to the human
 
-- Python 3.11, Flask app in src/app.py
-- Existing models in src/models/
-- Tests use pytest, run from project root
-- bcrypt already in requirements.txt
+**Never** ignore an escalation or force the same model to retry without changes. If the implementer said it's stuck, something needs to change.
 
-#### Step 2: Dispatch Spec Compliance Reviewer
+## Prompt Templates
 
-After the implementer completes, verify against the original spec:
-
-Spawn a subagent to do the work with:
-
-**goal:** Review if implementation matches the spec from the plan
-
-**description:**
-
-ORIGINAL TASK SPEC:
-
-- Create src/models/user.py with User class
-- Fields: email (str), password_hash (str)
-- Use bcrypt for password hashing
-- Include __repr__
-
-CHECK:
-
-- [ ] All requirements from spec implemented?
-- [ ] File paths match spec?
-- [ ] Function signatures match spec?
-- [ ] Behavior matches expected?
-- [ ] Nothing extra added (no scope creep)?
-
-OUTPUT: PASS or list of specific spec gaps to fix.
-
-**If spec issues found:** Fix gaps, then re-run spec review. Continue only when spec-compliant.
-
-#### Step 3: Dispatch Code Quality Reviewer
-
-After spec compliance passes:
-
-Spawn a subagent to do the work with:
-
-**goal:** Review code quality for Task 1 implementation
-
-**description:**
-
-FILES TO REVIEW:
-
-- src/models/user.py
-- tests/models/test_user.py
-
-CHECK:
-
-- [ ] Follows project conventions and style?
-- [ ] Proper error handling?
-- [ ] Clear variable/function names?
-- [ ] Adequate test coverage?
-- [ ] No obvious bugs or missed edge cases?
-- [ ] No security issues?
-
-OUTPUT FORMAT:
-
-- Critical Issues: [must fix before proceeding]
-- Important Issues: [should fix]
-- Minor Issues: [optional]
-- Verdict: APPROVED or REQUEST_CHANGES
-
-**If quality issues found:** Fix issues, re-review. Continue only when approved.
-
-#### Step 4: Mark Complete
-
-```python
-
-todo([{"id": "task-1", "content": "Create User model with email field", "status": "completed"}], merge=True)
-
-```
-
-### 3. Final Review
-
-After ALL tasks are complete, dispatch a final integration reviewer:
-
-Spawn a subagent to do the work with:
-
-**goal:** Review the entire implementation for consistency and integration issues
-
-**description:**
-
-All tasks from the plan are complete. Review the full implementation:
-
-- Do all components work together?
-- Any inconsistencies between tasks?
-- All tests passing?
-- Ready for merge?
-
-### 4. Verify and Commit
-
-```bash
-
-# Run full test suite
-
-pytesttests/-q
-
-
-# Review all changes
-
-gitdiff--stat
-
-
-# Final commit if needed
-
-gitadd-A && gitcommit-m"feat: complete [feature name] implementation"
-
-```
-
-## Task Granularity
-
-**Each task = 2-5 minutes of focused work.**
-
-**Too big:**
-
-- "Implement user authentication system"
-
-**Right size:**
-
-- "Create User model with email and password fields"
-- "Add password hashing function"
-- "Create login endpoint"
-- "Add JWT token generation"
-- "Create registration endpoint"
-
-## Red Flags — Never Do These
-
-- Start implementation without a plan
-- Skip reviews (spec compliance OR code quality)
-- Proceed with unfixed critical/important issues
-- Dispatch multiple implementation subagents for tasks that touch the same files
-- Make subagent read the plan file (provide full text in context instead)
-- Skip scene-setting context (subagent needs to understand where the task fits)
-- Ignore subagent questions (answer before letting them proceed)
-- Accept "close enough" on spec compliance
-- Skip review loops (reviewer found issues → implementer fixes → review again)
-- Let implementer self-review replace actual review (both are needed)
-
--**Start code quality review before spec compliance is PASS** (wrong order)
-
-- Move to next task while either review has open issues
-
-## Handling Issues
-
-### If Subagent Asks Questions
-
-- Answer clearly and completely
-- Provide additional context if needed
-- Don't rush them into implementation
-
-### If Reviewer Finds Issues
-
-- Implementer subagent (or a new one) fixes them
-- Reviewer reviews again
-- Repeat until approved
-- Don't skip the re-review
-
-### If Subagent Fails a Task
-
-- Dispatch a new fix subagent with specific instructions about what went wrong
-- Don't try to fix manually in the controller session (context pollution)
-
-## Efficiency Notes
-
-**Why fresh subagent per task:**
-
-- Prevents context pollution from accumulated state
-- Each subagent gets clean, focused context
-- No confusion from prior tasks' code or reasoning
-
-**Why two-stage review:**
-
-- Spec review catches under/over-building early
-- Quality review ensures the implementation is well-built
-- Catches issues before they compound across tasks
-
-**Cost trade-off:**
-
-- More subagent invocations (implementer + 2 reviewers per task)
-- But catches issues early (cheaper than debugging compounded problems later)
-
-## Integration with Other Skills
-
-### With writing-plans
-
-This skill EXECUTES plans created by the writing-plans skill:
-
-1. User requirements → writing-plans → implementation plan
-2. Implementation plan → subagent-driven-development → working code
-
-### With test-driven-development
-
-Implementer subagents should follow TDD:
-
-1. Write failing test first
-2. Implement minimal code
-3. Verify test passes
-4. Commit
-
-Include TDD instructions in every implementer context.
-
-### With requesting-code-review
-
-The two-stage review process IS the code review. For final integration review, use the requesting-code-review skill's review dimensions.
-
-### With systematic-debugging
-
-If a subagent encounters bugs during implementation:
-
-1. Follow systematic-debugging process
-2. Find root cause before fixing
-3. Write regression test
-4. Resume implementation
+- `./implementer-prompt.md` - Dispatch implementer subagent
+- `./spec-reviewer-prompt.md` - Dispatch spec compliance reviewer subagent
+- `./code-quality-reviewer-prompt.md` - Dispatch code quality reviewer subagent
 
 ## Example Workflow
 
 ```
+You: I'm using Subagent-Driven Development to execute this plan.
 
-[Read plan: docs/plans/auth-feature.md]
+[Read plan file once: docs/plans/feature-plan.md]
+[Extract all 5 tasks with full text and context]
+[Create TodoWrite with all tasks]
 
-[Create todo list with 5 tasks]
+Task 1: Hook installation script
 
+[Get Task 1 text and context (already extracted)]
+[Dispatch implementation subagent with full task text + context]
 
---- Task 1: Create User model ---
+Implementer: "Before I begin - should the hook be installed at user or system level?"
 
-[Dispatch implementer subagent]
+You: "User level (~/.config/myapp/hooks/)"
 
-  Implementer: "Should email be unique?"
+Implementer: "Got it. Implementing now..."
+[Later] Implementer:
+  - Implemented install-hook command
+  - Added tests, 5/5 passing
+  - Self-review: Found I missed --force flag, added it
+  - Committed
 
-  You: "Yes, email must be unique"
+[Dispatch spec compliance reviewer]
+Spec reviewer: ✅ Spec compliant - all requirements met, nothing extra
 
-  Implementer: Implemented, 3/3 tests passing, committed.
-
-
-[Dispatch spec reviewer]
-
-  Spec reviewer: ✅ PASS — all requirements met
-
-
-[Dispatch quality reviewer]
-
-  Quality reviewer: ✅ APPROVED — clean code, good tests
-
+[Get git SHAs, dispatch code quality reviewer]
+Code reviewer: Strengths: Good test coverage, clean. Issues: None. Approved.
 
 [Mark Task 1 complete]
 
+Task 2: Recovery modes
 
---- Task 2: Password hashing ---
+[Get Task 2 text and context (already extracted)]
+[Dispatch implementation subagent with full task text + context]
 
-[Dispatch implementer subagent]
+Implementer: [No questions, proceeds]
+Implementer:
+  - Added verify/repair modes
+  - 8/8 tests passing
+  - Self-review: All good
+  - Committed
 
-  Implementer: No questions, implemented, 5/5 tests passing.
+[Dispatch spec compliance reviewer]
+Spec reviewer: ❌ Issues:
+  - Missing: Progress reporting (spec says "report every 100 items")
+  - Extra: Added --json flag (not requested)
 
+[Implementer fixes issues]
+Implementer: Removed --json flag, added progress reporting
 
-[Dispatch spec reviewer]
+[Spec reviewer reviews again]
+Spec reviewer: ✅ Spec compliant now
 
-  Spec reviewer: ❌ Missing: password strength validation (spec says "min 8 chars")
-
+[Dispatch code quality reviewer]
+Code reviewer: Strengths: Solid. Issues (Important): Magic number (100)
 
 [Implementer fixes]
+Implementer: Extracted PROGRESS_INTERVAL constant
 
-  Implementer: Added validation, 7/7 tests passing.
-
-
-[Dispatch spec reviewer again]
-
-  Spec reviewer: ✅ PASS
-
-
-[Dispatch quality reviewer]
-
-  Quality reviewer: Important: Magic number 8, extract to constant
-
-  Implementer: Extracted MIN_PASSWORD_LENGTH constant
-
-  Quality reviewer: ✅ APPROVED
-
+[Code reviewer reviews again]
+Code reviewer: ✅ Approved
 
 [Mark Task 2 complete]
 
+...
 
-... (continue for all tasks)
+[After all tasks]
+[Dispatch final code-reviewer]
+Final reviewer: All requirements met, ready to merge
 
-
-[After all tasks: dispatch final integration reviewer]
-
-[Run full test suite: all passing]
-
-[Done!]
-
+Done!
 ```
 
-## Remember
+## Advantages
 
-```
+**vs. Manual execution:**
+- Subagents follow TDD naturally
+- Fresh context per task (no confusion)
+- Parallel-safe (subagents don't interfere)
+- Subagent can ask questions (before AND during work)
 
-Fresh subagent per task
+**vs. Executing Plans:**
+- Same session (no handoff)
+- Continuous progress (no waiting)
+- Review checkpoints automatic
 
-Two-stage review every time
+**Efficiency gains:**
+- No file reading overhead (controller provides full text)
+- Controller curates exactly what context is needed
+- Subagent gets complete information upfront
+- Questions surfaced before work begins (not after)
 
-Spec compliance FIRST
+**Quality gates:**
+- Self-review catches issues before handoff
+- Two-stage review: spec compliance, then code quality
+- Review loops ensure fixes actually work
+- Spec compliance prevents over/under-building
+- Code quality ensures implementation is well-built
 
-Code quality SECOND
+**Cost:**
+- More subagent invocations (implementer + 2 reviewers per task)
+- Controller does more prep work (extracting all tasks upfront)
+- Review loops add iterations
+- But catches issues early (cheaper than debugging later)
 
-Never skip reviews
+## Red Flags
 
-Catch issues early
+**Never:**
+- Start implementation on main/master branch without explicit user consent
+- Skip reviews (spec compliance OR code quality)
+- Proceed with unfixed issues
+- Dispatch multiple implementation subagents in parallel (conflicts)
+- Make subagent read plan file (provide full text instead)
+- Skip scene-setting context (subagent needs to understand where task fits)
+- Ignore subagent questions (answer before letting them proceed)
+- Accept "close enough" on spec compliance (spec reviewer found issues = not done)
+- Skip review loops (reviewer found issues = implementer fixes = review again)
+- Let implementer self-review replace actual review (both are needed)
+- **Start code quality review before spec compliance is ✅** (wrong order)
+- Move to next task while either review has open issues
 
-```
+**If subagent asks questions:**
+- Answer clearly and completely
+- Provide additional context if needed
+- Don't rush them into implementation
 
-**Quality is not an accident. It's the result of systematic process.**
+**If reviewer finds issues:**
+- Implementer (same subagent) fixes them
+- Reviewer reviews again
+- Repeat until approved
+- Don't skip the re-review
+
+**If subagent fails task:**
+- Dispatch fix subagent with specific instructions
+- Don't try to fix manually (context pollution)
+
+## Integration
+
+**Required workflow skills:**
+- **using-git-worktrees** - REQUIRED: Set up isolated workspace before starting
+- **writing-plans** - Creates the plan this skill executes
+- **requesting-code-review** - Code review template for reviewer subagents
+- **finishing-a-development-branch** - Complete development after all tasks
+
+**Subagents should use:**
+- **test-driven-development** - Subagents follow TDD for each task
+
+**Alternative workflow:**
+- **executing-plans** - Use for parallel session instead of same-session execution
