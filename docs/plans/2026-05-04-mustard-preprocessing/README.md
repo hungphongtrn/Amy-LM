@@ -44,7 +44,7 @@ See [decisions.md](./decisions.md) for:
 
 ## Execution
 
-Once ready, implement Phase 1 tasks sequentially (test-first):
+Implement the 10 tasks sequentially (test-first):
 
 ```bash
 # Task order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10
