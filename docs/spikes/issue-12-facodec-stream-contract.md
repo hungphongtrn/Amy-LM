@@ -187,17 +187,95 @@ class TimbreEmbedding(nn.Module):
 
 ## Corrected Training Sample Schema
 
+### Field Migration (current → corrected)
+
+| Old Field | Old Type | → | New Field | New Type | Change |
+|-----------|---------|---|-----------|----------|--------|
+| `timbre_codebooks_idx` | `Sequence(int64)` | → | `acoustic_codebooks_idx` | `Sequence(Sequence(int64))` | Rename + flatten scalar → `[3, T80]` nested |
+| *(missing)* | — | → | `timbre_vector` | `Sequence(float32)` | New field, D=256 from `spk_embs` |
+| `content_codebooks_idx` | `Sequence(int64)` | → | `content_codebooks_idx` | `Sequence(Sequence(int64))` | Flatten scalar → `[2, T80]` nested |
+| `prosody_codebooks_idx` | `Sequence(int64)` | → | `prosody_codebooks_idx` | `Sequence(int64)` | No change (single codebook) |
+| `audio` | `HFAudio(16000)` | → | `audio` | `HFAudio(16000)` | No change |
+| `label` | *(dataset-native)* | → | `label` | *(dataset-native)* | No change |
+| `dataset` | `string` | → | `dataset` | `string` | No change |
+| `id` | `string` | → | `id` | `string` | No change |
+
+### FACodecEncoder corrected return contract
+
+The current encoder returns `(content_indices, prosody_indices, timbre_indices)` as lists of scalar ints.
+The corrected encoder must return:
+
+```python
+@dataclass
+class FACodecStreams:
+    prosody_codebooks_idx: torch.Tensor   # [1, T80], int64
+    content_codebooks_idx: torch.Tensor   # [2, T80], int64
+    acoustic_codebooks_idx: torch.Tensor  # [3, T80], int64
+    timbre_vector: torch.Tensor           # [256], float32
+
+FACodecEncoder.encode(audio) -> FACodecStreams
+```
+
+Per-frame processing (line 363-381 region of facodec_encoder.py) must change from:
+- Averaging `vq_id[3:6]` into scalar int → Emitting `vq_id[3:6]` as-is
+- Ignoring `spk_embs` → Capturing and returning `spk_embs.squeeze()`
+
+### Corrected HF Features schema
+
 ```python
 features = Features({
     "dataset": Value("string"),
     "id": Value("string"),
     "audio": HFAudio(sampling_rate=16000),
-    "content_codebooks_idx": Sequence(Value("int64")),  # [2, T80] flattened or nested
+    "content_codebooks_idx": Sequence(Sequence(Value("int64"))),  # [2, T80] nested
     "prosody_codebooks_idx": Sequence(Value("int64")),  # [T80]
     "acoustic_codebooks_idx": Sequence(Sequence(Value("int64"))),  # [3, T80] — RENAMED from timbre
-    "timbre_embedding": Sequence(Value("float32")),  # [timbre_dim] — NEW, from spk_embs
+    "timbre_vector": Sequence(Value("float32")),  # [256] — NEW, from spk_embs
 })
 ```
+
+## Test Audit
+
+### Test corrections needed (#6)
+
+#### test_facodec_encoder.py
+
+**Return value count assertions (3-tuple → 4-tuple):**
+- Line 28: `content_indices, prosody_indices, timbre_indices = encoder.encode(audio)` → Must unpack 4 values (`prosody_codebooks_idx, content_codebooks_idx, acoustic_codebooks_idx, timbre_vector`)
+- Lines 40, 56, 71, 86: Same tuple unpacking issue throughout test methods
+- Lines 98, 103: `result_1s = encoder.encode(audio_1s)` and frame count assertions on 3 items
+- Lines 136-139: Batch result unpacking expects 3 items per result → needs 4
+- Lines 150-155: Batch comparison assertions on 3 items per result
+- Lines 163, 165: Frame count assertions on `results[0]` (3 indices)
+- Lines 183-184, 203-211: Real batch test assertions on 3 items
+- Lines 259-264: `test_real_encode_returns_three_index_lists` - expects 3 lists, needs 4 (with timbre_vector)
+- Lines 272-278: Range validation loops over 3 index lists
+- Lines 283-285: Length equality check for 3 lists
+- Lines 292-301: Different audio output test checks 3 streams
+- Lines 309-317: Frame count scaling test on 3 items
+- Line 323: 2D audio handling test unpacks 3 items
+
+**Type assertions to update:**
+- Line 43: `for indices in [content_indices, prosody_indices, timbre_indices]:` → Replace `timbre_indices` with `acoustic_codebooks_idx`
+- Lines 76-78: Stream difference assertions reference `timbre_indices` → should reference `acoustic_codebooks_idx`
+
+**Mock mode corrections needed:**
+- Mock encoder must generate `timbre_vector` of shape `(256,)` float32 in addition to current 3 streams
+- All mock test methods that verify "3 index lists" need to be updated to "4 items (3 index lists + 1 vector)"
+
+#### test_dataset_processor.py
+
+**Required columns assertions:**
+- Lines 116-121: `required_columns` list includes `"timbre_codebooks_idx"` → must rename to `"acoustic_codebooks_idx"` and add `"timbre_vector"`
+- Line 301: Same `required_columns` list in save/load test
+
+**Field name references:**
+- Line 158: `for col in ["content_codebooks_idx", "prosody_codebooks_idx", "timbre_codebooks_idx"]:` → rename `timbre_codebooks_idx` → `acoustic_codebooks_idx`
+- Lines 185-188: Frame count tolerance assertions iterate over 3 columns including `timbre_codebooks_idx` → rename
+
+**Type assertions to add:**
+- New assertions needed: `timbre_vector` should be list of float32, length 256 (not frame-dependent)
+- Lines 163-165: Integer range checks should exclude `timbre_vector` (it's float, not int indices)
 
 ## Preprocessing to MOSS-Audio Data Flow
 
