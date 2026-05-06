@@ -647,6 +647,24 @@ acoustic vq_id[3:]:(3, 1, 80)
 2. **Quantized is a list** of 3 tensors — matches the 3 residual codebook structure
 3. All VQ slicing matches the documented contract exactly
 
+## CONTEXT.md Verification
+
+All canonical terms verified against spike findings:
+
+| Term | Found | Status |
+|------|-------|--------|
+| FACodec definition (1P+2C+3A+timbre) | Line 17-19 | Correct |
+| Acoustic Stream (vq_id[3:], not timbre) | Line 35-38 | Correct |
+| Timbre Vector (spk_embs, utterance-level) | Line 43-45 | Correct |
+| Stream Dimensionality Contract | Line 55-57 | Correct |
+| Stream Activation Config | Line 63-65 | Correct |
+| Residual Summation (per-stream λ) | Line 47-49 | Correct |
+| Flagged ambiguity (timbre_codebooks_idx error) | Line 119-121, 126 | Correct |
+| Timbre broadcast (never passes TemporalPool) | Line 100 | Correct |
+| VQ streams pass through TemporalPool | Line 101 | Correct |
+
+CONTEXT.md covers all canonical terms from the spike contract. No changes required.
+
 ## Acceptance Criteria Status
 
 - [x] FACodec tensor contract verified against Amphion source/checkpoint
@@ -655,6 +673,7 @@ acoustic vq_id[3:]:(3, 1, 80)
 
 - [x] CONTEXT.md updated with Acoustic Stream, FACodec Content Stream, per-stream lambda, Stream Dimensionality Contract, Stream Activation Config
   - Already updated during 2026-05-06 grill session; verified in Phase 1 audit
+  - **Phase 3 verification complete**: All 9 canonical terms cross-checked and confirmed present
 
 - [x] #6 schema documented with corrected field names, shapes, and types
   - Field migration table, FACodecEncoder return contract, HF Features schema completed
