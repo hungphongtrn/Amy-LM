@@ -7,8 +7,31 @@ for testing purposes.
 
 import os
 import sys
+from dataclasses import dataclass
 from typing import Optional, Tuple, List
 import torch
+
+
+@dataclass
+class FACodecStreams:
+    """FACodec output streams container.
+    
+    Holds all outputs from FACodec encoder/decoder:
+    - prosody_codebooks_idx: [1, T80] int64 - prosody codebook indices
+    - content_codebooks_idx: [2, T80] int64 - content codebook indices  
+    - acoustic_codebooks_idx: [3, T80] int64 - acoustic/residual codebook indices
+    - timbre_vector: [256] float32 - utterance-level timbre vector from spk_embs
+    
+    Args:
+        prosody_codebooks_idx: Prosody stream indices, shape [1, T80]
+        content_codebooks_idx: Content stream indices, shape [2, T80]
+        acoustic_codebooks_idx: Acoustic stream indices, shape [3, T80]
+        timbre_vector: Timbre vector, shape [256] float32
+    """
+    prosody_codebooks_idx: torch.Tensor   # [1, T80], int64
+    content_codebooks_idx: torch.Tensor   # [2, T80], int64
+    acoustic_codebooks_idx: torch.Tensor  # [3, T80], int64
+    timbre_vector: torch.Tensor           # [256], float32
 
 # Add vendor/Amphion to path so we can import Amphion models
 _vendor_path = os.path.join(os.path.dirname(__file__), "..", "..", "vendor", "Amphion")
@@ -18,14 +41,15 @@ if os.path.isdir(_vendor_path) and _vendor_path not in sys.path:
 
 
 class FACodecEncoder:
-    """Wrapper for FACodec encoder that extracts content, prosody, and timbre indices.
+    """Wrapper for FACodec encoder that extracts disentangled speech representations.
     
-    FACodec is a neural audio codec that disentangles speech into three interpretable
-    layers: content (semantic), prosody (pitch/rhythm), and timbre (speaker identity).
+    FACodec is a neural audio codec that disentangles speech into four interpretable
+    streams: prosody (pitch/rhythm), content (semantic), acoustic (residual detail),
+    and a continuous timbre vector (speaker identity).
     
     When Amphion is available, this wrapper loads the real FACodec model.
     When Amphion is NOT available, it falls back to a deterministic mock that
-    generates structurally valid indices for testing.
+    generates structurally valid streams for testing.
     
     Args:
         device: Device to run on ("cpu" or "cuda")
@@ -35,15 +59,17 @@ class FACodecEncoder:
     Attributes:
         device: The device being used
         _mock: True if using mock fallback (Amphion not available)
-        _frame_rate: Frames per second output (~12.5 Hz)
+        _frame_rate: Nominal frames per second (~12.5 Hz for compatibility)
+        FACODEC_FRAME_RATE: Actual FACodec frame rate (80 Hz)
         _vocab_size: Codebook vocabulary size (1024 for FACodec)
         _sample_rate: Audio sample rate (16000 Hz)
     
     Example:
         >>> encoder = FACodecEncoder(device="cpu")
         >>> audio = torch.randn(32000)  # 2 seconds at 16kHz
-        >>> content, prosody, timbre = encoder.encode(audio)
-        >>> len(content)  # ~25 frames at 12.5 Hz
+        >>> streams = encoder.encode(audio)
+        >>> streams.prosody_codebooks_idx.shape  # [1, T80] where T80 ≈ 160 frames at 80 Hz
+        >>> streams.timbre_vector.shape  # [256] float32
     """
     
     # FACodec constants
@@ -158,20 +184,25 @@ class FACodecEncoder:
             self._encoder = None
             self._decoder = None
         
-    def encode(self, audio: torch.Tensor) -> Tuple[list[int], list[int], list[int]]:
-        """Encode audio into FACodec indices.
+    def encode(self, audio: torch.Tensor) -> FACodecStreams:
+        """Encode audio into FACodec streams.
         
-        Takes raw audio waveform and returns codebook indices for content,
-        prosody, and timbre streams.
+        Takes raw audio waveform and returns FACodecStreams containing all
+        disentangled representations: prosody, content, acoustic codebooks,
+        and the continuous timbre vector.
         
         Args:
             audio: Audio waveform tensor, shape [samples] or [1, samples].
                    Should be at 16kHz sample rate.
         
         Returns:
-            Tuple of (content_indices, prosody_indices, timbre_indices).
-            Each is a list of integer indices into codebooks of size 2048.
-            Frame rate is ~12.5 Hz (80 samples per frame at 16kHz).
+            FACodecStreams dataclass with:
+            - prosody_codebooks_idx: [1, T80] int64 tensor
+            - content_codebooks_idx: [2, T80] int64 tensor
+            - acoustic_codebooks_idx: [3, T80] int64 tensor
+            - timbre_vector: [256] float32 tensor (from spk_embs)
+            
+            T80 = number of frames at 80 Hz (hop_size=200 at 16000 Hz)
         
         Raises:
             ValueError: If audio is empty or has wrong shape.
@@ -193,7 +224,7 @@ class FACodecEncoder:
         else:
             return self._encode_real(audio)
     
-    def encode_batch(self, audios: List[torch.Tensor]) -> List[Tuple[List[int], List[int], List[int]]]:
+    def encode_batch(self, audios: List[torch.Tensor]) -> List[FACodecStreams]:
         """Encode a batch of audio samples through FACodec.
         
         Pads variable-length audio to the same length, runs FACodec once on the
@@ -203,8 +234,8 @@ class FACodecEncoder:
             audios: List of 1D audio tensors, each shape [samples] at 16kHz.
         
         Returns:
-            List of (content_indices, prosody_indices, timbre_indices) tuples,
-            one per input audio sample.
+            List of FACodecStreams objects, one per input audio sample.
+            Each contains tensors with per-sample valid lengths.
         
         Raises:
             ValueError: If the batch is empty.
@@ -219,7 +250,7 @@ class FACodecEncoder:
     
     def _encode_real_batch(
         self, audios: List[torch.Tensor]
-    ) -> List[Tuple[List[int], List[int], List[int]]]:
+    ) -> List[FACodecStreams]:
         """Batch encode using real FACodec model.
         
         Pads all samples to max length, runs through model once,
@@ -229,7 +260,7 @@ class FACodecEncoder:
             audios: List of 1D audio tensors
         
         Returns:
-            List of (content, prosody, timbre) index tuples
+            List of FACodecStreams with per-sample valid lengths
         """
         lengths = [a.shape[0] for a in audios]
         max_len = max(lengths)
@@ -243,93 +274,122 @@ class FACodecEncoder:
         
         with torch.no_grad():
             enc_out = self._encoder(batch)
-            _, vq_id, _, _, _ = self._decoder(enc_out, eval_vq=False, vq=True)
+            # Capture spk_embs as 5th return value (the true timbre vector)
+            _, vq_id, _, _, spk_embs = self._decoder(enc_out, eval_vq=False, vq=True)
         
         hop_size = 200
         
         results = []
         for i, length in enumerate(lengths):
             num_frames = length // hop_size
-            vq_sample = vq_id[:, i, :num_frames].cpu()
+            # vq_id shape: [6, batch, num_frames]
+            vq_sample = vq_id[:, i, :num_frames].cpu()  # [6, num_frames]
             
-            prosody_indices = []
-            content_indices = []
-            timbre_indices = []
+            # Extract streams WITHOUT averaging - preserve codebook structure
+            # prosody: vq_id[0:1] -> shape [1, num_frames]
+            prosody_indices = vq_sample[0:1]  # [1, T]
             
-            for frame_idx in range(num_frames):
-                prosody_indices.append(int(vq_sample[0, frame_idx].item()))
-                content_val = int((vq_sample[1, frame_idx].item() + vq_sample[2, frame_idx].item()) // 2)
-                content_indices.append(content_val)
-                timbre_val = int((vq_sample[3, frame_idx].item() + vq_sample[4, frame_idx].item() + vq_sample[5, frame_idx].item()) // 3)
-                timbre_indices.append(timbre_val)
+            # content: vq_id[1:3] -> shape [2, num_frames]
+            content_indices = vq_sample[1:3]  # [2, T]
             
-            results.append((content_indices, prosody_indices, timbre_indices))
+            # acoustic: vq_id[3:6] -> shape [3, num_frames]
+            acoustic_indices = vq_sample[3:6]  # [3, T]
+            
+            # timbre vector: spk_embs[i] -> shape [256] float32
+            timbre_vector = spk_embs[i].cpu()  # [256]
+            
+            streams = FACodecStreams(
+                prosody_codebooks_idx=prosody_indices,
+                content_codebooks_idx=content_indices,
+                acoustic_codebooks_idx=acoustic_indices,
+                timbre_vector=timbre_vector,
+            )
+            results.append(streams)
         
         return results
     
-    def _encode_mock(self, audio: torch.Tensor) -> Tuple[list[int], list[int], list[int]]:
-        """Generate deterministic mock indices for testing.
+    def _encode_mock(self, audio: torch.Tensor) -> FACodecStreams:
+        """Generate deterministic mock FACodec streams for testing.
         
-        Creates fake but structurally valid indices based on audio length.
+        Creates fake but structurally valid streams based on audio length.
         Uses a deterministic algorithm so results are reproducible.
         
         Args:
             audio: Audio waveform tensor
         
         Returns:
-            Tuple of (content, prosody, timbre) index lists
+            FACodecStreams with mock tensors of correct shapes:
+            - prosody_codebooks_idx: [1, T80] int64
+            - content_codebooks_idx: [2, T80] int64  
+            - acoustic_codebooks_idx: [3, T80] int64
+            - timbre_vector: [256] float32
         """
-        # Calculate number of frames based on audio length
+        # Calculate number of frames at FACodec's actual 80 Hz rate
+        # hop_size = 200 at 16000 Hz -> 80 frames per second
         num_samples = audio.shape[0]
-        num_frames = max(1, int(num_samples / self.SAMPLES_PER_FRAME))
+        hop_size = 200
+        num_frames = max(1, num_samples // hop_size)
         
         # Use deterministic pseudo-random generation based on audio statistics
-        # This ensures same audio produces same indices, but different
-        # audio produces different indices
         audio_mean = audio.mean().item()
         audio_std = audio.std().item() if audio.numel() > 1 else 0.0
         
         # Seed based on audio characteristics for determinism
         seed = int((abs(audio_mean) + abs(audio_std)) * 10000) % 2**32
         
-        # Generate indices using deterministic algorithm
-        content_indices = []
-        prosody_indices = []
-        timbre_indices = []
-        
+        # Generate mock indices for each codebook
+        # Prosody: 1 codebook [1, T]
+        prosody_indices = torch.zeros(1, num_frames, dtype=torch.int64)
         for frame_idx in range(num_frames):
-            # Content: varies with frame position, some randomness
-            content_val = (seed + frame_idx * 47) % self.VOCAB_SIZE
-            content_indices.append(content_val)
-            
-            # Prosody: offset from content, different pattern
-            prosody_val = (seed + frame_idx * 31 + 512) % self.VOCAB_SIZE
-            prosody_indices.append(prosody_val)
-            
-            # Timbre: different offset and pattern
-            timbre_val = (seed + frame_idx * 19 + 1024) % self.VOCAB_SIZE
-            timbre_indices.append(timbre_val)
+            prosody_indices[0, frame_idx] = (seed + frame_idx * 31 + 512) % self.VOCAB_SIZE
         
-        return content_indices, prosody_indices, timbre_indices
+        # Content: 2 codebooks [2, T]
+        content_indices = torch.zeros(2, num_frames, dtype=torch.int64)
+        for frame_idx in range(num_frames):
+            content_indices[0, frame_idx] = (seed + frame_idx * 47) % self.VOCAB_SIZE
+            content_indices[1, frame_idx] = (seed + frame_idx * 53) % self.VOCAB_SIZE
+        
+        # Acoustic: 3 codebooks [3, T]
+        acoustic_indices = torch.zeros(3, num_frames, dtype=torch.int64)
+        for frame_idx in range(num_frames):
+            acoustic_indices[0, frame_idx] = (seed + frame_idx * 19 + 1024) % self.VOCAB_SIZE
+            acoustic_indices[1, frame_idx] = (seed + frame_idx * 23 + 1024) % self.VOCAB_SIZE
+            acoustic_indices[2, frame_idx] = (seed + frame_idx * 29 + 1024) % self.VOCAB_SIZE
+        
+        # Timbre vector: [256] float32 (deterministic but varies by audio)
+        timbre_vector = torch.zeros(256, dtype=torch.float32)
+        for i in range(256):
+            timbre_vector[i] = ((seed + i * 17) % 1000) / 1000.0  # Values in [0, 1)
+        
+        return FACodecStreams(
+            prosody_codebooks_idx=prosody_indices,
+            content_codebooks_idx=content_indices,
+            acoustic_codebooks_idx=acoustic_indices,
+            timbre_vector=timbre_vector,
+        )
     
-    def _encode_real(self, audio: torch.Tensor) -> Tuple[list[int], list[int], list[int]]:
+    def _encode_real(self, audio: torch.Tensor) -> FACodecStreams:
         """Encode using real FACodec model (when Amphion is available).
         
         FACodec produces 6 codebooks:
         - vq_id[0:1] = prosody (1 codebook)
         - vq_id[1:3] = content (2 codebooks) 
-        - vq_id[3:6] = residual/timbre (3 codebooks)
+        - vq_id[3:6] = acoustic/residual (3 codebooks)
         
-        We map these to Amy-LM's expected format:
-        - content: Average of the 2 content codebooks
-        - prosody: The prosody codebook
-        - timbre: Average of the 3 residual codebooks (acoustic/timbre info)
+        And a continuous timbre vector:
+        - spk_embs = utterance-level timbre embedding [256] float32
+        
+        We map these to FACodecStreams WITHOUT averaging codebooks:
+        - prosody_codebooks_idx: vq_id[0:1] -> [1, T80]
+        - content_codebooks_idx: vq_id[1:3] -> [2, T80]
+        - acoustic_codebooks_idx: vq_id[3:6] -> [3, T80]
+        - timbre_vector: spk_embs.squeeze(0) -> [256]
         
         Args:
             audio: Audio waveform tensor, shape [samples]
         
         Returns:
-            Tuple of (content, prosody, timbre) index lists
+            FACodecStreams with tensors of correct shapes
         """
         if self._encoder is None or self._decoder is None:
             # Should not happen if _mock is properly set, but just in case
@@ -343,29 +403,28 @@ class FACodecEncoder:
             enc_out = self._encoder(audio_batch)
             
             # Quantize through decoder to get indices
-            # vq_id shape: [num_codebooks, batch, num_frames]
-            _, vq_id, _, _, _ = self._decoder(enc_out, eval_vq=False, vq=True)
+            # Capture spk_embs as 5th return value (the true timbre vector)
+            _, vq_id, _, _, spk_embs = self._decoder(enc_out, eval_vq=False, vq=True)
             
             # vq_id is [6, 1, num_frames] -> squeeze batch dim -> [6, num_frames]
             vq_id = vq_id.squeeze(1).cpu()
-        
-        num_frames = vq_id.shape[1]
-        
-        # Extract indices for each frame
-        content_indices = []
-        prosody_indices = []
-        timbre_indices = []
-        
-        for frame_idx in range(num_frames):
-            # Prosody: single codebook [0]
-            prosody_indices.append(int(vq_id[0, frame_idx].item()))
             
-            # Content: average of codebooks [1] and [2] (then clamp to valid range)
-            content_val = int((vq_id[1, frame_idx].item() + vq_id[2, frame_idx].item()) // 2)
-            content_indices.append(content_val)
-            
-            # Timbre: average of residual codebooks [3], [4], [5]
-            timbre_val = int((vq_id[3, frame_idx].item() + vq_id[4, frame_idx].item() + vq_id[5, frame_idx].item()) // 3)
-            timbre_indices.append(timbre_val)
+            # spk_embs is [1, 256] -> squeeze batch dim -> [256]
+            timbre_vector = spk_embs.squeeze(0).cpu()  # [256]
         
-        return content_indices, prosody_indices, timbre_indices
+        # Extract streams WITHOUT averaging - preserve full codebook structure
+        # prosody: vq_id[0:1] -> [1, num_frames]
+        prosody_indices = vq_id[0:1]  # [1, T]
+        
+        # content: vq_id[1:3] -> [2, num_frames]
+        content_indices = vq_id[1:3]  # [2, T]
+        
+        # acoustic: vq_id[3:6] -> [3, num_frames]
+        acoustic_indices = vq_id[3:6]  # [3, T]
+        
+        return FACodecStreams(
+            prosody_codebooks_idx=prosody_indices,
+            content_codebooks_idx=content_indices,
+            acoustic_codebooks_idx=acoustic_indices,
+            timbre_vector=timbre_vector,
+        )

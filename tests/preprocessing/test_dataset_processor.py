@@ -115,7 +115,8 @@ class TestDatasetProcessor:
             # Verify all required columns are present
             required_columns = [
                 "dataset", "id", "audio",
-                "content_codebooks_idx", "prosody_codebooks_idx", "timbre_codebooks_idx"
+                "prosody_codebooks_idx", "content_codebooks_idx", 
+                "acoustic_codebooks_idx", "timbre_vector"
             ]
             for col in required_columns:
                 assert col in result.column_names, f"Missing column: {col}"
@@ -154,21 +155,50 @@ class TestDatasetProcessor:
             )
             
             for row in result:
-                # Verify all indices are lists of integers
-                for col in ["content_codebooks_idx", "prosody_codebooks_idx", "timbre_codebooks_idx"]:
-                    indices = row[col]
-                    assert isinstance(indices, list), f"{col} should be a list"
-                    assert len(indices) > 0, f"{col} should not be empty"
-                    
-                    for idx in indices:
-                        assert isinstance(idx, int), f"{col} should contain integers"
-                        assert 0 <= idx < 2048, f"{col} index out of range"
+                # Prosody: flat list of ints [T80]
+                prosody = row["prosody_codebooks_idx"]
+                assert isinstance(prosody, list), "prosody should be a list"
+                assert len(prosody) > 0, "prosody should not be empty"
+                for idx in prosody:
+                    assert isinstance(idx, int), "prosody should contain integers"
+                    assert 0 <= idx < 1024, "prosody index out of range"
+                
+                # Content: nested list [2, T80] -> list of 2 lists
+                content = row["content_codebooks_idx"]
+                assert isinstance(content, list), "content should be a list"
+                assert len(content) == 2, "content should have 2 codebooks"
+                for cb_idx in range(2):
+                    assert isinstance(content[cb_idx], list), f"content[{cb_idx}] should be a list"
+                    for idx in content[cb_idx]:
+                        assert isinstance(idx, int), "content should contain integers"
+                        assert 0 <= idx < 1024, "content index out of range"
+                
+                # Acoustic: nested list [3, T80] -> list of 3 lists
+                acoustic = row["acoustic_codebooks_idx"]
+                assert isinstance(acoustic, list), "acoustic should be a list"
+                assert len(acoustic) == 3, "acoustic should have 3 codebooks"
+                for cb_idx in range(3):
+                    assert isinstance(acoustic[cb_idx], list), f"acoustic[{cb_idx}] should be a list"
+                    for idx in acoustic[cb_idx]:
+                        assert isinstance(idx, int), "acoustic should contain integers"
+                        assert 0 <= idx < 1024, "acoustic index out of range"
+                
+                # Timbre vector: list of 256 floats
+                timbre = row["timbre_vector"]
+                assert isinstance(timbre, list), "timbre_vector should be a list"
+                assert len(timbre) == 256, "timbre_vector should have 256 elements"
+                for val in timbre:
+                    assert isinstance(val, float), "timbre_vector should contain floats"
 
     def test_process_dataset_has_correct_frame_counts(self, processor):
-        """Frame counts should match expected from audio duration."""
+        """Frame counts should match expected from audio duration at 80 Hz.
+        
+        2 seconds at 16kHz with hop_size=200 -> 32000/200 = 160 frames at 80 Hz
+        """
         mock_data = self._create_synthetic_dataset(num_samples=2)
-        # 2 seconds at 16kHz should produce ~25 frames at 12.5 Hz
-        expected_frames = 25
+        # 2 seconds at 16kHz = 32000 samples
+        # FACodec uses hop_size=200 -> 32000/200 = 160 frames
+        expected_frames = 160
         
         with patch("preprocessing.dataset_processor.load_dataset") as mock_load:
             from datasets import Dataset
@@ -181,11 +211,26 @@ class TestDatasetProcessor:
             )
             
             for row in result:
-                # Allow some tolerance (20-30 frames)
-                for col in ["content_codebooks_idx", "prosody_codebooks_idx", "timbre_codebooks_idx"]:
-                    frame_count = len(row[col])
-                    assert 20 <= frame_count <= 30, \
-                        f"Expected ~25 frames, got {frame_count} for {col}"
+                # Prosody: flat list, length = T80
+                prosody_frames = len(row["prosody_codebooks_idx"])
+                assert prosody_frames == expected_frames, \
+                    f"Expected {expected_frames} prosody frames, got {prosody_frames}"
+                
+                # Content: nested list [2, T80], inner lists have length T80
+                content = row["content_codebooks_idx"]
+                content_frames = len(content[0])  # Check first codebook
+                assert content_frames == expected_frames, \
+                    f"Expected {expected_frames} content frames, got {content_frames}"
+                
+                # Acoustic: nested list [3, T80], inner lists have length T80
+                acoustic = row["acoustic_codebooks_idx"]
+                acoustic_frames = len(acoustic[0])  # Check first codebook
+                assert acoustic_frames == expected_frames, \
+                    f"Expected {expected_frames} acoustic frames, got {acoustic_frames}"
+                
+                # Timbre vector: always 256 elements (utterance-level)
+                timbre_len = len(row["timbre_vector"])
+                assert timbre_len == 256, f"Expected 256 timbre values, got {timbre_len}"
 
     def test_process_dataset_preserves_audio_field(self, processor):
         """Audio field should be preserved with array and sampling_rate."""
@@ -203,10 +248,8 @@ class TestDatasetProcessor:
             
             row = result[0]
             assert "audio" in row
-            assert "array" in row["audio"]
-            assert "sampling_rate" in row["audio"]
+            assert row["audio"] is not None
             assert row["audio"]["sampling_rate"] == 16000
-            # HF datasets may convert arrays to lists, either is valid
             audio_array = row["audio"]["array"]
             assert isinstance(audio_array, (np.ndarray, list))
             assert len(audio_array) > 0
@@ -300,7 +343,8 @@ class TestDatasetProcessor:
             # Verify all columns are present
             required_columns = [
                 "dataset", "id", "audio",
-                "content_codebooks_idx", "prosody_codebooks_idx", "timbre_codebooks_idx"
+                "prosody_codebooks_idx", "content_codebooks_idx",
+                "acoustic_codebooks_idx", "timbre_vector"
             ]
             for col in required_columns:
                 assert col in loaded.column_names, f"Missing column after load: {col}"

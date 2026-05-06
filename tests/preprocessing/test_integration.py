@@ -99,21 +99,22 @@ class TestEndToEndPipeline:
                 max_samples=3
             )
             
-            # Verify all 6 required columns are present
+            # Verify all 7 required columns are present
             required_columns = [
                 "dataset",      # Source dataset name
                 "id",           # Unique sample ID
                 "audio",        # Audio dict with array and sampling_rate
-                "content_codebooks_idx",   # Content codebook indices
-                "prosody_codebooks_idx",   # Prosody codebook indices
-                "timbre_codebooks_idx"     # Timbre codebook indices
+                "prosody_codebooks_idx",   # Prosody codebook indices [T80]
+                "content_codebooks_idx",   # Content codebook indices [2, T80]
+                "acoustic_codebooks_idx",  # Acoustic codebook indices [3, T80]
+                "timbre_vector"            # Timbre vector [256] float32
             ]
             
             for col in required_columns:
                 assert col in result.column_names, f"Missing required column: {col}"
 
     def test_pipeline_indices_are_integers_in_valid_range(self, dataset_processor):
-        """End-to-end: Indices are integers within valid codebook range (0-2047)."""
+        """End-to-end: Indices are integers within valid codebook range (0-1023)."""
         mock_data = self._create_mock_audio_dataset(num_samples=2, duration_sec=2.0)
         
         with patch("preprocessing.dataset_processor.load_dataset") as mock_load:
@@ -126,16 +127,36 @@ class TestEndToEndPipeline:
                 split="train"
             )
             
-            # Verify all indices are valid integers in range [0, 2047]
+            # Verify all indices are valid integers in range [0, 1023]
             for row in result:
-                for col in ["content_codebooks_idx", "prosody_codebooks_idx", "timbre_codebooks_idx"]:
-                    indices = row[col]
-                    assert isinstance(indices, list), f"{col} should be a list"
-                    assert len(indices) > 0, f"{col} should not be empty"
-                    
-                    for idx in indices:
-                        assert isinstance(idx, int), f"{col} should contain integers, got {type(idx)}"
-                        assert 0 <= idx < 2048, f"{col} index {idx} out of valid range [0, 2047]"
+                # Prosody: flat list [T80]
+                prosody = row["prosody_codebooks_idx"]
+                assert isinstance(prosody, list), "prosody should be a list"
+                for idx in prosody:
+                    assert isinstance(idx, int), "prosody should contain integers"
+                    assert 0 <= idx < 1024, f"prosody index {idx} out of range"
+                
+                # Content: nested list [2, T80]
+                content = row["content_codebooks_idx"]
+                assert isinstance(content, list) and len(content) == 2
+                for cb_idx in range(2):
+                    for idx in content[cb_idx]:
+                        assert isinstance(idx, int)
+                        assert 0 <= idx < 1024, f"content[{cb_idx}] index out of range"
+                
+                # Acoustic: nested list [3, T80]
+                acoustic = row["acoustic_codebooks_idx"]
+                assert isinstance(acoustic, list) and len(acoustic) == 3
+                for cb_idx in range(3):
+                    for idx in acoustic[cb_idx]:
+                        assert isinstance(idx, int)
+                        assert 0 <= idx < 1024, f"acoustic[{cb_idx}] index out of range"
+                
+                # Timbre vector: list of 256 floats
+                timbre = row["timbre_vector"]
+                assert isinstance(timbre, list) and len(timbre) == 256
+                for val in timbre:
+                    assert isinstance(val, float), "timbre_vector should contain floats"
 
     def test_pipeline_dataset_field_matches_source(self, dataset_processor):
         """End-to-end: The 'dataset' field matches the source dataset name."""
@@ -158,13 +179,12 @@ class TestEndToEndPipeline:
                     f"Expected dataset='{dataset_name}', got '{row['dataset']}'"
 
     def test_pipeline_frame_counts_are_correct(self, dataset_processor):
-        """End-to-end: Frame counts match expected from 2-second audio at 12.5 Hz."""
+        """End-to-end: Frame counts match expected from 2-second audio at 80 Hz."""
         duration_sec = 2.0
         mock_data = self._create_mock_audio_dataset(num_samples=2, duration_sec=duration_sec)
         
-        # Expected: 2 seconds * 12.5 frames/second = ~25 frames
-        expected_frames = 25
-        tolerance = 5  # Allow some tolerance (20-30 frames)
+        # Expected: 2 seconds at 16kHz with hop_size=200 -> 32000/200 = 160 frames at 80 Hz
+        expected_frames = 160
         
         with patch("preprocessing.dataset_processor.load_dataset") as mock_load:
             from datasets import Dataset
@@ -177,10 +197,26 @@ class TestEndToEndPipeline:
             )
             
             for row in result:
-                for col in ["content_codebooks_idx", "prosody_codebooks_idx", "timbre_codebooks_idx"]:
-                    frame_count = len(row[col])
-                    assert abs(frame_count - expected_frames) <= tolerance, \
-                        f"Expected ~{expected_frames} frames for {col}, got {frame_count}"
+                # Prosody: flat list
+                prosody_frames = len(row["prosody_codebooks_idx"])
+                assert prosody_frames == expected_frames, \
+                    f"Expected {expected_frames} prosody frames, got {prosody_frames}"
+                
+                # Content: nested list [2, T80], check first codebook
+                content = row["content_codebooks_idx"]
+                content_frames = len(content[0])
+                assert content_frames == expected_frames, \
+                    f"Expected {expected_frames} content frames, got {content_frames}"
+                
+                # Acoustic: nested list [3, T80], check first codebook
+                acoustic = row["acoustic_codebooks_idx"]
+                acoustic_frames = len(acoustic[0])
+                assert acoustic_frames == expected_frames, \
+                    f"Expected {expected_frames} acoustic frames, got {acoustic_frames}"
+                
+                # Timbre vector: always 256 elements (utterance-level)
+                timbre_len = len(row["timbre_vector"])
+                assert timbre_len == 256, f"Expected 256 timbre values, got {timbre_len}"
 
 
 class TestDatasetRoundTrip:
@@ -385,11 +421,16 @@ class TestFullPipelineWithReporting:
                 audio_array = row["audio"]["array"]
                 sampling_rate = row["audio"]["sampling_rate"]
                 duration_sec = len(audio_array) / sampling_rate
-                
+
+                # Get frame counts (prosody is flat, content/acoustic are nested)
+                content_frames = len(row["content_codebooks_idx"][0]) if row["content_codebooks_idx"] else 0
+                prosody_frames = len(row["prosody_codebooks_idx"])
+                acoustic_frames = len(row["acoustic_codebooks_idx"][0]) if row["acoustic_codebooks_idx"] else 0
+
                 summary.add_processed(
-                    content_frames=len(row["content_codebooks_idx"]),
-                    prosody_frames=len(row["prosody_codebooks_idx"]),
-                    timbre_frames=len(row["timbre_codebooks_idx"]),
+                    content_frames=content_frames,
+                    prosody_frames=prosody_frames,
+                    acoustic_frames=acoustic_frames,
                     duration_sec=duration_sec
                 )
             
@@ -410,7 +451,7 @@ class TestFullPipelineWithReporting:
                 "total_failed",
                 "avg_content_frames",
                 "avg_prosody_frames",
-                "avg_timbre_frames",
+                "avg_acoustic_frames",
                 "avg_duration_sec",
                 "duration_histogram",
                 "failed_samples"
@@ -444,14 +485,17 @@ class TestFullPipelineWithReporting:
                 sampling_rate = row["audio"]["sampling_rate"]
                 duration_sec = len(audio_array) / sampling_rate
                 total_duration += duration_sec
-                
-                content_frames = len(row["content_codebooks_idx"])
+
+                # Get frame counts (prosody is flat, content/acoustic are nested)
+                content_frames = len(row["content_codebooks_idx"][0]) if row["content_codebooks_idx"] else 0
                 total_content_frames += content_frames
-                
+                prosody_frames = len(row["prosody_codebooks_idx"])
+                acoustic_frames = len(row["acoustic_codebooks_idx"][0]) if row["acoustic_codebooks_idx"] else 0
+
                 summary.add_processed(
                     content_frames=content_frames,
-                    prosody_frames=len(row["prosody_codebooks_idx"]),
-                    timbre_frames=len(row["timbre_codebooks_idx"]),
+                    prosody_frames=prosody_frames,
+                    acoustic_frames=acoustic_frames,
                     duration_sec=duration_sec
                 )
             
@@ -498,14 +542,19 @@ class TestFullPipelineWithReporting:
                 audio_array = row["audio"]["array"]
                 sampling_rate = row["audio"]["sampling_rate"]
                 duration_sec = len(audio_array) / sampling_rate
-                
+
+                # Get frame counts (prosody is flat, content/acoustic are nested)
+                content_frames = len(row["content_codebooks_idx"][0]) if row["content_codebooks_idx"] else 0
+                prosody_frames = len(row["prosody_codebooks_idx"])
+                acoustic_frames = len(row["acoustic_codebooks_idx"][0]) if row["acoustic_codebooks_idx"] else 0
+
                 summary.add_processed(
-                    content_frames=len(row["content_codebooks_idx"]),
-                    prosody_frames=len(row["prosody_codebooks_idx"]),
-                    timbre_frames=len(row["timbre_codebooks_idx"]),
+                    content_frames=content_frames,
+                    prosody_frames=prosody_frames,
+                    acoustic_frames=acoustic_frames,
                     duration_sec=duration_sec
                 )
-            
+
             # Add the failed sample
             summary.add_failed(sample_id="sample_001", error="Empty audio array")
             
@@ -578,7 +627,9 @@ class TestIntegrationEdgeCases:
             
             assert len(result) == 1
             assert "content_codebooks_idx" in result.column_names
-            assert len(result[0]["content_codebooks_idx"]) > 0
+            # content_codebooks_idx is now nested [2, T80]
+            assert len(result[0]["content_codebooks_idx"]) == 2  # 2 codebooks
+            assert len(result[0]["content_codebooks_idx"][0]) > 0  # Has frames
 
     def test_varying_duration_pipeline(self, dataset_processor):
         """Pipeline handles varying audio durations."""
@@ -610,9 +661,10 @@ class TestIntegrationEdgeCases:
             )
             
             assert len(result) == 3
-            
+
             # Verify frame counts scale with duration
-            frame_counts = [len(row["content_codebooks_idx"]) for row in result]
+            # content_codebooks_idx is nested [2, T80], so check inner list length
+            frame_counts = [len(row["content_codebooks_idx"][0]) for row in result]
             # Longer audio should have more frames (roughly proportional)
             assert frame_counts[0] < frame_counts[1] < frame_counts[2], \
                 f"Frame counts should increase with duration: {frame_counts}"

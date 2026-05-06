@@ -29,12 +29,13 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from preprocessing.facodec_encoder import FACodecEncoder
+from preprocessing.facodec_encoder import FACodecEncoder, FACodecStreams
 
 # Try to import datasets, provide helpful error if not available
 try:
     from datasets import load_dataset, Dataset
     from datasets import Audio as HFAudio
+    from datasets import Features, Value, Sequence
     _DATASETS_AVAILABLE = True
 except ImportError:
     _DATASETS_AVAILABLE = False
@@ -46,7 +47,7 @@ class DatasetProcessor:
     This class orchestrates the preprocessing pipeline:
     - Loads HF datasets (mocked in tests)
     - Encodes audio through FACodec in batches
-    - Extracts codebook indices for content, prosody, timbre
+    - Extracts all FACodec streams: prosody, content, acoustic, timbre vector
     - Handles errors gracefully (logs failures, continues)
     - Supports saving to disk and pushing to HF Hub
     
@@ -117,9 +118,10 @@ class DatasetProcessor:
                 - dataset: Source dataset name
                 - id: Unique sample ID
                 - audio: Audio dict with array and sampling_rate
-                - content_codebooks_idx: List of content codebook indices
-                - prosody_codebooks_idx: List of prosody codebook indices
-                - timbre_codebooks_idx: List of timbre codebook indices
+                - prosody_codebooks_idx: List of prosody indices [T80]
+                - content_codebooks_idx: Nested list of content indices [2, T80]
+                - acoustic_codebooks_idx: Nested list of acoustic indices [3, T80]
+                - timbre_vector: List of 256 float32 values
         
         Raises:
             ValueError: If dataset loading fails
@@ -151,11 +153,11 @@ class DatasetProcessor:
                 
                 if len(audio_batch) >= batch_size or idx == len(source_dataset) - 1:
                     results = self.facodec.encode_batch(audio_batch)
-                    for (samp, ds_name, row_idx), (content, prosody, timbre) in zip(
+                    for (samp, ds_name, row_idx), streams in zip(
                         pending_entries, results
                     ):
                         entry = self._build_processed_entry(
-                            samp, ds_name, row_idx, content, prosody, timbre
+                            samp, ds_name, row_idx, streams
                         )
                         processed_data.append(entry)
                     audio_batch.clear()
@@ -174,7 +176,20 @@ class DatasetProcessor:
         if not processed_data:
             raise RuntimeError("No samples were successfully processed")
         
-        return Dataset.from_list(processed_data)
+        features = Features({
+            "dataset": Value("string"),
+            "id": Value("string"),
+            "audio": HFAudio(sampling_rate=16000),
+            # prosody: single codebook [T80] -> Sequence(int64)
+            "prosody_codebooks_idx": Sequence(Value("int64")),
+            # content: 2 codebooks [2, T80] -> Sequence(Sequence(int64))
+            "content_codebooks_idx": Sequence(Sequence(Value("int64"))),
+            # acoustic: 3 codebooks [3, T80] -> Sequence(Sequence(int64))
+            "acoustic_codebooks_idx": Sequence(Sequence(Value("int64"))),
+            # timbre vector: [256] float32 -> Sequence(float32)
+            "timbre_vector": Sequence(Value("float32")),
+        })
+        return Dataset.from_list(processed_data, features=features)
     
     def _extract_audio_from_sample(self, sample: Dict[str, Any]) -> torch.Tensor:
         """Extract and preprocess audio from a dataset sample.
@@ -216,22 +231,62 @@ class DatasetProcessor:
         sample: Dict[str, Any],
         dataset_name: str,
         row_idx: int,
-        content_indices: List[int],
-        prosody_indices: List[int],
-        timbre_indices: List[int],
+        streams: FACodecStreams,
     ) -> Dict[str, Any]:
-        """Construct a processed sample entry from encoding results."""
+        """Construct a processed sample entry from FACodecStreams.
+        
+        Converts tensors to nested lists for HF Dataset serialization.
+        
+        Args:
+            sample: Original dataset sample
+            dataset_name: Name of the source dataset
+            row_idx: Row index in the source dataset
+            streams: FACodecStreams with encoded representations
+            
+        Returns:
+            Dict with all fields ready for HF Dataset
+        """
         audio_data = sample.get("audio")
-        audio_array = audio_data.get("array") if isinstance(audio_data, dict) else audio_data
+
+        if isinstance(audio_data, dict):
+            audio_array = audio_data.get("array")
+            sampling_rate = audio_data.get("sampling_rate", 16000)
+        else:
+            try:
+                audio_array = audio_data["array"]
+                sampling_rate = audio_data["sampling_rate"]
+            except Exception:
+                audio_array = None
+                sampling_rate = 16000
+
+        if isinstance(audio_array, list):
+            audio_array = np.array(audio_array, dtype=np.float32)
+        elif isinstance(audio_array, np.ndarray):
+            audio_array = audio_array.astype(np.float32)
 
         sample_id = sample.get("id", f"row_{row_idx}")
+        
+        # Convert tensors to nested lists
+        # prosody: [1, T] -> squeeze to [T] -> list
+        prosody_indices = streams.prosody_codebooks_idx.squeeze(0).tolist()
+        
+        # content: [2, T] -> list of 2 lists
+        content_indices = streams.content_codebooks_idx.tolist()
+        
+        # acoustic: [3, T] -> list of 3 lists
+        acoustic_indices = streams.acoustic_codebooks_idx.tolist()
+        
+        # timbre vector: [256] -> list of 256 floats
+        timbre_vector = streams.timbre_vector.tolist()
+        
         return {
             "dataset": dataset_name,
             "id": sample_id,
-            "audio": {"array": audio_array, "sampling_rate": 16000},
-            "content_codebooks_idx": content_indices,
+            "audio": {"array": audio_array, "sampling_rate": sampling_rate},
             "prosody_codebooks_idx": prosody_indices,
-            "timbre_codebooks_idx": timbre_indices,
+            "content_codebooks_idx": content_indices,
+            "acoustic_codebooks_idx": acoustic_indices,
+            "timbre_vector": timbre_vector,
         }
     
     def _resample_audio(

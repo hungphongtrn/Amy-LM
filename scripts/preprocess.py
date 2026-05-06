@@ -28,6 +28,8 @@ import signal
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
+
 # Add src to path for imports
 def _setup_path():
     """Add src directory to Python path."""
@@ -150,7 +152,7 @@ def print_summary(summary: ProcessingSummary, report_path: Path) -> None:
     print(f"\n🎵 Frame Statistics:")
     print(f"   Average content frames: {stats['avg_content_frames']:.1f}")
     print(f"   Average prosody frames: {stats['avg_prosody_frames']:.1f}")
-    print(f"   Average timbre frames: {stats['avg_timbre_frames']:.1f}")
+    print(f"   Average acoustic frames: {stats['avg_acoustic_frames']:.1f}")
     
     # Duration statistics
     print(f"\n⏱️  Duration Statistics:")
@@ -275,20 +277,34 @@ def main(
     
     # Extract statistics from processed dataset
     for sample in processed_dataset:
-        # Get audio duration
-        audio_array = sample.get("audio", {}).get("array", [])
-        sampling_rate = sample.get("audio", {}).get("sampling_rate", 16000)
-        duration_sec = len(audio_array) / sampling_rate if sampling_rate > 0 else 0.0
+        audio_field = sample.get("audio", {})
+        if isinstance(audio_field, dict):
+            audio_array = audio_field.get("array", [])
+            sampling_rate = audio_field.get("sampling_rate", 16000)
+        else:
+            try:
+                audio_array = audio_field["array"]
+                sampling_rate = audio_field["sampling_rate"]
+            except Exception:
+                audio_array = np.array([])
+                sampling_rate = 16000
+        duration_sec = len(audio_array) / sampling_rate if sampling_rate > 0 and hasattr(audio_array, '__len__') else 0.0
         
         # Get frame counts from codebook indices
+        # Note: content and acoustic are now nested [codebooks, frames]
         content_indices = sample.get("content_codebooks_idx", [])
         prosody_indices = sample.get("prosody_codebooks_idx", [])
-        timbre_indices = sample.get("timbre_codebooks_idx", [])
-        
+        acoustic_indices = sample.get("acoustic_codebooks_idx", [])
+
+        # For nested lists, get temporal length from first codebook
+        content_frames = len(content_indices[0]) if content_indices else 0
+        prosody_frames = len(prosody_indices)
+        acoustic_frames = len(acoustic_indices[0]) if acoustic_indices else 0
+
         summary.add_processed(
-            content_frames=len(content_indices),
-            prosody_frames=len(prosody_indices),
-            timbre_frames=len(timbre_indices),
+            content_frames=content_frames,
+            prosody_frames=prosody_frames,
+            acoustic_frames=acoustic_frames,
             duration_sec=duration_sec
         )
     
