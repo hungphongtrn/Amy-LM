@@ -55,6 +55,17 @@ Amy-LM/
 - Training configs are in YAML format
 - Prefer async patterns for API calls
 
+## Long-Running Tasks
+
+For long-running tasks (e.g., preprocessing large datasets, training), always use `nohup` and provide the log path to the user. The user will inform when the task is complete for review.
+
+Example:
+```bash
+mkdir -p logs
+nohup python scripts/preprocess.py --dataset ... > logs/preprocess_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+echo "Log: logs/preprocess_<timestamp>.log"
+```
+
 ## Agent skills
 
 ### Issue tracker

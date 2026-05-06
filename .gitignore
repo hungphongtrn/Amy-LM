@@ -13,3 +13,5 @@ audio_samples/
 data/
 .data/
 .DS_STORE
+*.egg-info/
+vendor/

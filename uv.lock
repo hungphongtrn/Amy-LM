@@ -180,6 +180,7 @@ dependencies = [
     { name = "torchcodec" },
     { name = "transformers" },
     { name = "wandb" },
+    { name = "wheel" },
 ]
 
 [package.optional-dependencies]
@@ -198,6 +199,13 @@ llm = [
     { name = "torch" },
     { name = "transformers" },
 ]
+preprocessing = [
+    { name = "datasets" },
+    { name = "huggingface-hub" },
+    { name = "soundfile" },
+    { name = "torchaudio" },
+    { name = "tqdm" },
+]
 upload = [
     { name = "huggingface-hub" },
 ]
@@ -214,7 +222,9 @@ requires-dist = [
     { name = "accelerate", marker = "extra == 'llm'" },
     { name = "cython", specifier = ">=3.2.2" },
     { name = "datasets", specifier = ">=2.15.0" },
+    { name = "datasets", marker = "extra == 'preprocessing'", specifier = ">=2.15.0" },
     { name = "einops", specifier = ">=0.8.1" },
+    { name = "huggingface-hub", marker = "extra == 'preprocessing'", specifier = ">=0.20.0" },
     { name = "huggingface-hub", marker = "extra == 'upload'", specifier = ">=0.20.0" },
     { name = "ipykernel", specifier = ">=7.1.0" },
     { name = "lightning", specifier = ">=2.6.0" },
@@ -227,19 +237,23 @@ requires-dist = [
     { name = "setuptools", specifier = ">=80.9.0" },
     { name = "soundfile", specifier = ">=0.13.1" },
     { name = "soundfile", marker = "extra == 'alignment'", specifier = ">=0.12.0" },
+    { name = "soundfile", marker = "extra == 'preprocessing'", specifier = ">=0.13.1" },
     { name = "soundfile", marker = "extra == 'wavlm'", specifier = ">=0.12.0" },
     { name = "torch", marker = "extra == 'alignment'", specifier = ">=2.0.0" },
     { name = "torch", marker = "extra == 'llm'", specifier = ">=2.0.0" },
     { name = "torch", marker = "extra == 'wavlm'", specifier = ">=2.0.0" },
     { name = "torchaudio", specifier = ">=2.9.1" },
+    { name = "torchaudio", marker = "extra == 'preprocessing'", specifier = ">=2.9.1" },
     { name = "torchcodec", specifier = ">=0.9.1" },
+    { name = "tqdm", marker = "extra == 'preprocessing'", specifier = ">=4.66.0" },
     { name = "transformers", specifier = ">=4.57.3" },
     { name = "transformers", marker = "extra == 'alignment'", specifier = ">=4.35.0" },
     { name = "transformers", marker = "extra == 'llm'", specifier = ">=4.35.0" },
     { name = "transformers", marker = "extra == 'wavlm'", specifier = ">=4.35.0" },
     { name = "wandb", specifier = ">=0.23.1" },
+    { name = "wheel", specifier = ">=0.45.1" },
 ]
-provides-extras = ["alignment", "wavlm", "llm", "upload"]
+provides-extras = ["alignment", "wavlm", "llm", "upload", "preprocessing"]
 
 [[package]]
 name = "annotated-types"
@@ -4376,6 +4390,18 @@ name = "wget"
 version = "3.2"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/47/6a/62e288da7bcda82b935ff0c6cfe542970f04e29c756b0e147251b2fb251f/wget-3.2.zip", hash = "sha256:35e630eca2aa50ce998b9b1a127bb26b30dfee573702782aa982f875e3f16061", size = 10857, upload-time = "2015-10-22T15:26:37.51Z" }
+
+[[package]]
+name = "wheel"
+version = "0.47.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/39/62/75f18a0f03b4219c456652c7780e4d749b929eb605c098ce3a5b6b6bc081/wheel-0.47.0.tar.gz", hash = "sha256:cc72bd1009ba0cf63922e28f94d9d83b920aa2bb28f798a31d0691b02fa3c9b3", size = 63854, upload-time = "2026-04-22T15:51:27.727Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/87/1b/9e33c09813d65e248f7f773119148a612516a4bea93e9c6f545f78455b7c/wheel-0.47.0-py3-none-any.whl", hash = "sha256:212281cab4dff978f6cedd499cd893e1f620791ca6ff7107cf270781e587eced", size = 32218, upload-time = "2026-04-22T15:51:26.296Z" },
+]
 
 [[package]]
 name = "win32-setctime"

@@ -4,7 +4,10 @@
 
 ## Status
 
-🔲 **Not Started**
+:white_check_mark: **Implementation Complete** - 74 tests passing
+:warning: **Blocked** - No suitable pilot dataset. `hungphongtrn/mustard_plus_plus` doesn't exist.
+  The source MUStARD dataset is video-based (large, needs audio extraction).
+  Need a small audio-only HF dataset to pilot with.
 
 ## Quick Summary
 
