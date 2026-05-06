@@ -73,15 +73,15 @@ class TestResidualFusion:
         semantic = make_semantic()
         prosody = make_prosody()
         timbre = make_timbre()
-        
+
         semantic = semantic.clone().requires_grad_(True)
         prosody = prosody.clone().requires_grad_(True)
         timbre = timbre.clone().requires_grad_(True)
-        
+
         out = fusion(semantic, prosody, timbre)
         loss = out.sum()
         loss.backward()
-        
+
         assert semantic.grad is not None
         assert prosody.grad is not None
         assert timbre.grad is not None
@@ -102,12 +102,12 @@ class TestResidualFusion:
         with torch.no_grad():
             fusion._lambda.data.fill_(0.5)
         assert fusion._lambda.item() == 0.5
-        
+
         semantic = make_semantic()
         prosody = make_prosody()
         timbre = make_timbre()
         out = fusion(semantic, prosody, timbre)
-        
+
         zero_fusion = ResidualFusion(hidden_dim=HIDDEN_DIM)
         zero_out = zero_fusion(semantic, prosody, timbre)
         assert not torch.allclose(out, zero_out)
