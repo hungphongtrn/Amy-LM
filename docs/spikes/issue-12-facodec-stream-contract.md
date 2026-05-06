@@ -677,6 +677,40 @@ acoustic vq_id[3:]:(3, 1, 80)
 
 ---
 
+## Follow-Up Implementation Issues
+
+See `## Required Follow-Up Changes` for detailed change descriptions. This section provides the actionable checklist format.
+
+### Issue #6 (Preprocessing)
+- [ ] Rename `timbre_codebooks_idx` → `acoustic_codebooks_idx` in HF Features schema
+- [ ] Stop averaging vq_id[3:6] — preserve 3-codebook axis as `[3, T80]`
+- [ ] Capture `spk_embs` from decoder output (4th return value)
+- [ ] Add `timbre_vector` field to schema: `Sequence(float32)`, D=256
+- [ ] Update `content_codebooks_idx` to preserve `[2, T80]` codebook axis
+- [ ] Update `FACodecEncoder.encode()` return contract: 3-tuple → 4-tuple (FACodecStreams)
+- [ ] Update mock mode to match real tensor shapes
+- [ ] Update tests: 20+ assertions in `test_facodec_encoder.py`, 4 areas in `test_dataset_processor.py`
+- [ ] Update CLI and reporting references to old field name
+
+### Issue #7 (Deep Modules)
+- [ ] Replace `TimbreEmbedding` with `TimbreProjection` (discrete → continuous, D_timbre=256)
+- [ ] Create `AcousticEmbedding` module (3 codebook tables, sum aggregation)
+- [ ] Create `ContentEmbedding` module (2 codebook tables, sum aggregation)
+- [ ] Update `ProsodyEmbedding` input shape from `[B, T80]` to `[B, 1, T80]`
+- [ ] Replace single lambda with per-stream lambdas (λ_p, λ_c, λ_a, λ_t) in `ResidualFusion`
+- [ ] Add Stream Activation Config support to `ResidualFusion` (disabled streams excluded entirely)
+- [ ] Update `src/models/__init__.py` exports
+- [ ] Update tests: replace TimbreEmbedding tests, add AcousticEmbedding/ContentEmbedding tests, expand fusion tests
+
+### Issue #8 (MOSS-Audio Residual Extension)
+- [ ] Consume `audio` for online semantic encoding via MOSS-Audio
+- [ ] Consume `prosody_codebooks_idx` → ProsodyEmbedding → TemporalPool → P_t [B, T12, D]
+- [ ] Consume `timbre_vector` → TimbreProjection → broadcast → T_t [B, T12, D]
+- [ ] Wire ResidualFusion with per-stream lambdas inside MOSS-Audio forward path
+- [ ] Implement Stream Activation Config YAML
+- [ ] First experiment: Prosody only (λ_p enabled, all others disabled)
+- [ ] Second experiment: Prosody + Timbre (λ_p + λ_t enabled)
+
 ## Confidence
 
 - **High**: VQ stream slicing matches Amphion README documentation exactly (`vq_id[:1]` prosody, `vq_id[1:3]` content, `vq_id[3:]` residual)
