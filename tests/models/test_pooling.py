@@ -49,10 +49,10 @@ class TestTemporalPool:
         assert out.shape[0] == 4
 
     def test_handles_non_divisible_frame_count(self, pool):
-        """Pool 127 frames at 80 Hz → target = int(127 * 12.5 / 80) = 19."""
+        """Pool 127 frames at 80 Hz → target = round(127 * 12.5 / 80) = 20."""
         x = torch.randn(2, 127, EMBED_DIM)
         out = pool(x)
-        expected = int(127 * OUTPUT_RATE / INPUT_RATE)
+        expected = round(127 * OUTPUT_RATE / INPUT_RATE)
         assert out.shape[1] == expected
 
     def test_pooled_values_bounded(self, pool):
