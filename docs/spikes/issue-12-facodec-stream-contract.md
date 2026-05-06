@@ -255,9 +255,47 @@ Issue #8 (Prosody Stream Integration) assumes `timbre_codebooks_idx` contains ti
 
 **Recommendation**: Complete Issue #12 preprocessing fixes first, then resume Issue #8.
 
+## Executable Verification
+
+- Status: Complete
+- Command: `PYTHONPATH=/home/hungphongtrn/Workspace/Amy-LM uv run python scripts/inspect_facodec_contract.py --device cpu --seconds 1`
+
+### Actual Shapes
+
+```
+enc_out:           (1, 256, 80) torch.float32
+vq_post_emb:       (1, 256, 80) torch.float32
+vq_id:             (6, 1, 80) torch.int64
+unknown_return_3:  Tensor
+quantized:         list (len=3)
+quantized[0]:      (1, 256, 80) torch.float32
+spk_embs:          (1, 256) torch.float32
+timbre_vector:     (256,) torch.float32
+prosody vq_id[:1]: (1, 1, 80)
+content vq_id[1:3]:(2, 1, 80)
+acoustic vq_id[3:]:(3, 1, 80)
+```
+
+### Interpretation
+
+| Variable | Actual Shape | Confirmed Contract |
+|----------|--------------|-------------------|
+| `enc_out` | (batch=1, 256, frames=80) | ✓ Encoder output at 80 Hz frame rate |
+| `vq_id` | (6, batch=1, 80) | ✓ 6 codebooks × batch × 80 frames |
+| `vq_id[:1]` (prosody) | (1, 1, 80) | ✓ 1 codebook for prosody |
+| `vq_id[1:3]` (content) | (2, 1, 80) | ✓ 2 codebooks for content |
+| `vq_id[3:]` (acoustic) | (3, 1, 80) | ✓ 3 codebooks for acoustic/residual |
+| `spk_embs` | (batch=1, 256) | ✓ **Timbre Vector** is (256,) continuous float32 |
+| `spk_embs.squeeze()` (timbre_vector) | (256,) | ✓ Utterance-level embedding |
+
+**Key Findings:**
+1. **Timbre Vector dimensionality confirmed**: `spk_embs` is shape `(256,)` float32 — this resolves Open Question #1
+2. **Quantized is a list** of 3 tensors — matches the 3 residual codebook structure
+3. All VQ slicing matches the documented contract exactly
+
 ## Open Questions
 
-1. **Timbre Vector dimensionality**: What is the exact shape of `spk_embs` from FACodec? (Likely `[batch, 256]` or `[256]` per sample)
+1. ~~**Timbre Vector dimensionality**: What is the exact shape of `spk_embs` from FACodec?~~ **RESOLVED**: Confirmed `spk_embs` is `(256,)` float32 per utterance (batch=1 gives `(1, 256)` → squeeze to `(256,)`)
 2. **Acoustic Stream storage**: Should `acoustic_codebooks_idx` store `[3, T80]` as nested sequence or keep averaging? (Averaging loses information)
 3. **Backward compatibility**: Do we reprocess all datasets or provide migration script?
 4. **Embedding strategy**: Should Timbre Vector use learned projection (random init) or FACodec warm-start vectors?
