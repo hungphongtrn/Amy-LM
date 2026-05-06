@@ -35,8 +35,10 @@ class ProsodyEmbedding(nn.Module):
             self._projector = nn.Linear(codebook_dim, embed_dim, bias=False)
             with torch.no_grad():
                 self._projector.weight.data.normal_(mean=0.0, std=0.02)
+            for param in self._projector.parameters():
+                param.requires_grad = False
             self.register_buffer("_facodec_weights", warm_start_vectors.detach())
-    
+
     @property
     def weight(self) -> torch.Tensor:
         if self.init_strategy == "random":
@@ -49,7 +51,7 @@ class ProsodyEmbedding(nn.Module):
         repeats = (target_entries + num_entries - 1) // num_entries
         tiled = projected.repeat(repeats, 1)
         return tiled[:target_entries]
-    
+
     def forward(self, indices: torch.Tensor) -> torch.Tensor:
         w = self.weight
         return nn.functional.embedding(indices, w)
@@ -86,8 +88,10 @@ class TimbreEmbedding(nn.Module):
             self._projector = nn.Linear(codebook_dim, embed_dim, bias=False)
             with torch.no_grad():
                 self._projector.weight.data.normal_(mean=0.0, std=0.02)
+            for param in self._projector.parameters():
+                param.requires_grad = False
             self.register_buffer("_facodec_weights", warm_start_vectors.detach())
-    
+
     @property
     def weight(self) -> torch.Tensor:
         if self.init_strategy == "random":
