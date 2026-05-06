@@ -1,4 +1,4 @@
-"""Embedding tables for prosody and timbre discrete codebook indices."""
+"""Embedding tables for FACodec streams: prosody, timbre, content, acoustic."""
 from typing import Optional
 import torch
 import torch.nn as nn
@@ -187,24 +187,3 @@ class ContentEmbedding(nn.Module):
             result = result + self.embeddings[cb](codebook_indices[:, cb, :])
         return result
 
-
-# DEPRECATED: TimbreEmbedding is replaced by TimbreProjection
-# Kept for backward compatibility during transition
-class TimbreEmbedding(nn.Module):
-    """DEPRECATED: Use TimbreProjection instead.
-    
-    This class was for discrete timbre indices but FACodec provides 
-    continuous timbre vectors (spk_embs).
-    """
-    def __init__(
-        self,
-        vocab_size: int = 256,
-        embed_dim: int = 2560,
-        init_strategy: str = "random",
-        init_std: float = 0.02,
-        warm_start_vectors: Optional[torch.Tensor] = None,
-    ):
-        super().__init__()
-        raise DeprecationWarning(
-            "TimbreEmbedding is deprecated. Use TimbreProjection for continuous timbre vectors."
-        )

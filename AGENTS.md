@@ -82,4 +82,4 @@ Single-context repo — one `CONTEXT.md` at the root. See `docs/agents/domain.md
 
 ## Engineering Skills Workflow
 
-When using skills under `skills/engineering/`, first consult `WORKFLOW.md` to choose the appropriate workflow. Treat this file as the skill router and the individual `SKILL.md` files as the detailed procedures.
+Consult `WORKFLOW.md` to choose the appropriate workflow. Treat this file as the skill router and the individual `SKILL.md` files as the detailed procedures.
