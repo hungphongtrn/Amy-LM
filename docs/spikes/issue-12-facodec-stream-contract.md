@@ -305,6 +305,52 @@ MOSS-Audio Training (Forward Pass)
 | `dataset_processor.py:258` | Stores averaged VQ indices | No field for true Timbre Vector | Add `timbre_embedding: Sequence(float32)` |
 | `embedding.py:60-114` | `TimbreEmbedding` does discrete lookup | Expects indices, not continuous vector | Create `TimbreProjection` for float vectors |
 
+### Module Migration (current → corrected)
+
+| Current Module | Current Input | → | New Module | New Input | Change |
+|---------------|--------------|---|------------|-----------|--------|
+| `TimbreEmbedding` | `[B]` int64 | → | `TimbreProjection` | `[B, 256]` float32 | Discrete lookup → continuous linear projection |
+| *(missing)* | — | → | `AcousticEmbedding` | `[B, 3, T80]` int64 | New module for 3-codebook residual stream |
+| *(missing)* | — | → | `ContentEmbedding` | `[B, 2, T80]` int64 | New module for 2-codebook content stream |
+| `ProsodyEmbedding` | `[B, T80]` int64 | → | `ProsodyEmbedding` | `[B, 1, T80]` int64 | Add codebook axis (was flattened) |
+| `ResidualFusion` | `(sem, prosody, timbre)` | → | `ResidualFusion` | per-stream lambdas | Single λ → λ_p, λ_c, λ_a, λ_t |
+| `TemporalPool` | `[B, T80, D]` | → | `TemporalPool` | `[B, T80, D]` | No change |
+
+### __init__.py export changes
+
+Current:
+```python
+from .embedding import ProsodyEmbedding, TimbreEmbedding
+from .pooling import TemporalPool
+from .fusion import ResidualFusion
+```
+
+Corrected:
+```python
+from .embedding import ProsodyEmbedding, TimbreProjection, AcousticEmbedding, ContentEmbedding
+from .pooling import TemporalPool
+from .fusion import ResidualFusion
+```
+
+## Test Audit (Models)
+
+### Test corrections needed (#7)
+
+#### test_embedding.py
+- TimbreEmbedding tests (lines 87-140): Currently tests discrete embedding table lookup with 1D indices `[B]`. Will need to remain for backward compatibility but should be deprecated in favor of `TimbreProjection`.
+- Missing test class for `TimbreProjection`: Needs tests for `[B, 256]` float32 input, Linear projection, broadcast compatibility
+- Missing test class for `AcousticEmbedding`: Needs tests for 3-codebook embedding `[B, 3, T80]`, sum aggregation, shape validation
+- Missing test class for `ContentEmbedding`: Needs tests for 2-codebook embedding `[B, 2, T80]`, disabled-by-default behavior
+- Missing test updates for `ProsodyEmbedding`: Input shape should change from `[B, T80]` to `[B, 1, T80]` (add codebook axis)
+
+#### test_fusion.py
+- ResidualFusion tests (lines 1-113): Currently tests single lambda `_lambda` gate for combined (prosody + timbre) residual.
+- Line 68: `assert fusion._lambda.grad is not None` — needs update to per-stream lambdas `lambda_p`, `lambda_c`, `lambda_a`, `lambda_t`
+- Line 98: `assert fusion._lambda.item() == 0.0` — single lambda initialization test needs expansion
+- Lines 40-60: Identity tests assume 2 residual inputs (prosody, timbre) — needs expansion to 4 streams
+- Missing tests for stream_config gating: disabled streams should be excluded entirely, not just gated at zero
+- Missing tests for multi-stream gradient flow (content, acoustic gradients)
+
 ## Required Follow-Up Changes
 
 1. **Preprocessing pipeline** (`facodec_encoder.py`, `dataset_processor.py`):
@@ -321,6 +367,172 @@ MOSS-Audio Training (Forward Pass)
 3. **Data migration**:
    - Existing preprocessed datasets have wrong field names
    - Need reprocessing or backward compatibility layer
+
+### TimbreProjection specification (replaces TimbreEmbedding)
+
+```
+class TimbreProjection(nn.Module):
+    """Project continuous timbre vector into MOSS-Audio embedding space.
+
+    Replaces TimbreEmbedding (discrete lookup over integer indices).
+    The timbre vector is an utterance-level float32 tensor from FACodec spk_embs.
+
+    Args:
+        timbre_dim: Dimensionality of input timbre vector (default=256)
+        output_dim: Target embedding dimension (default=2560, MOSS-Audio hidden dim)
+        init_strategy: "random" | "warm_start" (default: "random")
+    """
+
+    def __init__(
+        self,
+        timbre_dim: int = 256,
+        output_dim: int = 2560,
+        init_strategy: str = "random",
+    ): ...
+
+    def forward(self, timbre_vector: torch.Tensor) -> torch.Tensor:
+        """Project utterance-level timbre.
+
+        Args:
+            timbre_vector: [B, timbre_dim] float32 from FACodec spk_embs
+
+        Returns:
+            [B, output_dim] float32 — broadcast to frames during fusion
+        """
+```
+
+### AcousticEmbedding specification (new)
+
+```
+class AcousticEmbedding(nn.Module):
+    """Embed 3 acoustic residual codebooks into MOSS-Audio embedding space.
+
+    Each codebook has its own independent embedding table (vocab → D).
+    Per-frame output is the sum of all three codebook embeddings at that frame.
+
+    Args:
+        vocab_size: Codebook vocabulary size (default=1024)
+        num_codebooks: Number of acoustic codebooks (default=3)
+        embed_dim: Target embedding dimension (default=2560)
+    """
+
+    def __init__(
+        self,
+        vocab_size: int = 1024,
+        num_codebooks: int = 3,
+        embed_dim: int = 2560,
+    ): ...
+
+    def forward(self, codebook_indices: torch.Tensor) -> torch.Tensor:
+        """Embed multi-codebook acoustic stream.
+
+        Args:
+            codebook_indices: [B, 3, T80] int64 from FACodec vq_id[3:]
+
+        Returns:
+            [B, T80, embed_dim] float32 — sum of per-codebook embeddings
+        """
+```
+
+### ContentEmbedding specification (new)
+
+```
+class ContentEmbedding(nn.Module):
+    """Embed 2 content codebooks into MOSS-Audio embedding space.
+
+    Same architecture as AcousticEmbedding but with 2 codebooks.
+    Disabled in the initial experiment (Stream Activation Config).
+
+    Args:
+        vocab_size: Codebook vocabulary size (default=1024)
+        num_codebooks: Number of content codebooks (default=2)
+        embed_dim: Target embedding dimension (default=2560)
+    """
+
+    def __init__(
+        self,
+        vocab_size: int = 1024,
+        num_codebooks: int = 2,
+        embed_dim: int = 2560,
+    ): ...
+
+    def forward(self, codebook_indices: torch.Tensor) -> torch.Tensor:
+        """Embed multi-codebook content stream.
+
+        Args:
+            codebook_indices: [B, 2, T80] int64 from FACodec vq_id[1:3]
+
+        Returns:
+            [B, T80, embed_dim] float32 — sum of per-codebook embeddings
+        """
+```
+
+### ProsodyEmbedding corrected interface
+
+```
+class ProsodyEmbedding(nn.Module):
+    """Embed FACodec prosody codebook into MOSS-Audio embedding space.
+
+    Args:
+        vocab_size: Codebook vocabulary size (default=1024)
+        embed_dim: Target embedding dimension (default=2560)
+        init_strategy: "random" | "warm_start" (default: "random")
+    """
+
+    def __init__(
+        self,
+        vocab_size: int = 1024,
+        embed_dim: int = 2560,
+        init_strategy: str = "random",
+    ): ...
+
+    def forward(self, codebook_indices: torch.Tensor) -> torch.Tensor:
+        """Embed single-codebook prosody stream.
+
+        Args:
+            codebook_indices: [B, 1, T80] int64 from FACodec vq_id[:1]
+
+        Returns:
+            [B, T80, embed_dim] float32
+        """
+```
+
+### ResidualFusion corrected interface
+
+```
+class ResidualFusion(nn.Module):
+    """Gated residual fusion: H = LayerNorm(S + Σ λ_i * stream_i)
+
+    Each stream (prosody, content, acoustic, timbre) has its own
+    learnable zero-initialized lambda gate. Disabled streams are
+    excluded from the computation entirely (not just gated at zero).
+
+    Args:
+        hidden_dim: Dimensionality of all streams (default=2560)
+        stream_config: Dict[str, bool] controlling which streams participate
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int = 2560,
+        stream_config: dict[str, bool] | None = None,
+    ): ...
+
+    def forward(
+        self,
+        semantic: torch.Tensor,                   # [B, T12, D]
+        prosody: torch.Tensor | None = None,      # [B, T12, D]
+        content: torch.Tensor | None = None,      # [B, T12, D]
+        acoustic: torch.Tensor | None = None,     # [B, T12, D]
+        timbre: torch.Tensor | None = None,       # [B, T12, D] (pre-broadcast)
+    ) -> torch.Tensor:
+        """Fuse streams via gated residual summation.
+
+        Each non-None stream must be already aligned to [B, T12, D].
+        Timbre must be broadcast to frames before this call.
+        None streams are not included in the sum.
+        """
+```
 
 ## Issue #8 Blocker Recommendation
 
