@@ -94,6 +94,45 @@ return {
 
 ---
 
+### Amphion FACodec README
+
+- **Source URL**: https://github.com/open-mmlab/Amphion/blob/main/models/codec/ns3_codec/README.md
+- **Mirror**: https://huggingface.co/amphion/naturalspeech3_facodec
+- `vq_id[:1]` → prosody (1 codebook)
+- `vq_id[1:3]` → content (2 codebooks)  
+- `vq_id[3:]` → residual/acoustic detail (3 codebooks in current checkpoint)
+- `spk_embs` → global speaker/timbre embedding, used in `fa_decoder.inference()`
+- **Conclusion**: `spk_embs` is the utterance-level timbre vector, not frame-level VQ indices
+
+#### Key API Snippet (from Amphion README)
+```python
+# quantize
+vq_post_emb, vq_id, _, quantized, spk_embs = fa_decoder(enc_out, eval_vq=False, vq=True)
+
+# codes
+print("vq id shape:", vq_id.shape)
+
+# get prosody code
+prosody_code = vq_id[:1]
+print("prosody code shape:", prosody_code.shape)
+
+# get content code
+cotent_code = vq_id[1:3]
+print("content code shape:", cotent_code.shape)
+
+# get residual code (acoustic detail codes)
+residual_code = vq_id[3:]
+print("residual code shape:", residual_code.shape)
+
+# speaker embedding
+print("speaker embedding shape:", spk_embs.shape)
+
+# decode (recommand)
+recon_wav = fa_decoder.inference(vq_post_emb, spk_embs)
+```
+
+---
+
 ### src/models/embedding.py
 
 **Issue**: `TimbreEmbedding` expects discrete indices and performs embedding table lookup, but the true Timbre Vector is a continuous float tensor that requires projection.
@@ -225,4 +264,12 @@ Issue #8 (Prosody Stream Integration) assumes `timbre_codebooks_idx` contains ti
 
 ---
 
-*Spike completed: Evidence recorded from CONTEXT.md and codebase audit. Ready for implementation planning.*
+*Spike completed: Evidence recorded from CONTEXT.md, codebase audit, and external Amphion FACodec documentation.*
+
+---
+
+## Confidence
+
+- **High**: VQ stream slicing matches Amphion README documentation exactly (`vq_id[:1]` prosody, `vq_id[1:3]` content, `vq_id[3:]` residual)
+- **Medium**: `spk_embs` as utterance-level timbre vector (consistent with README showing it as separate from VQ indices, but confirmation of exact shape requires local checkpoint run)
+- **High**: The Amphion README explicitly demonstrates that `spk_embs` is passed to `fa_decoder.inference(vq_post_emb, spk_embs)` as the speaker/timbre parameter, confirming it is the Timbre Vector
