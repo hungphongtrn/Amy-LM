@@ -63,6 +63,7 @@ class TestProsodyEmbedding:
             init_strategy="warm_start",
             warm_start_vectors=codebook,
         )
+        assert hasattr(emb, '_projector'), "projector should exist in warm_start mode"
         for name, param in emb.named_parameters():
             assert not param.requires_grad, f"{name} should be frozen"
 
@@ -124,3 +125,16 @@ class TestTimbreEmbedding:
         for b in range(4):
             for t in range(30):
                 assert torch.equal(out_expanded[b, t], out[b])
+
+    def test_warm_start_projector_is_frozen(self):
+        """Warm-start projector is static — no grad after init."""
+        codebook = torch.randn(TIMBRE_VOCAB, 320)
+        emb = TimbreEmbedding(
+            vocab_size=TIMBRE_VOCAB,
+            embed_dim=EMBED_DIM,
+            init_strategy="warm_start",
+            warm_start_vectors=codebook,
+        )
+        assert hasattr(emb, '_projector'), "projector should exist in warm_start mode"
+        for name, param in emb.named_parameters():
+            assert not param.requires_grad, f"{name} should be frozen"

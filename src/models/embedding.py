@@ -22,11 +22,11 @@ class ProsodyEmbedding(nn.Module):
             raise ValueError(
                 "warm_start_vectors is required when init_strategy='warm_start'"
             )
-        
+
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
         self.init_strategy = init_strategy
-        
+
         if init_strategy == "random":
             self.embedding = nn.Embedding(vocab_size, embed_dim)
             nn.init.normal_(self.embedding.weight, mean=0.0, std=init_std)
@@ -75,11 +75,11 @@ class TimbreEmbedding(nn.Module):
             raise ValueError(
                 "warm_start_vectors is required when init_strategy='warm_start'"
             )
-        
+
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
         self.init_strategy = init_strategy
-        
+
         if init_strategy == "random":
             self.embedding = nn.Embedding(vocab_size, embed_dim)
             nn.init.normal_(self.embedding.weight, mean=0.0, std=init_std)
@@ -104,7 +104,7 @@ class TimbreEmbedding(nn.Module):
         repeats = (target_entries + num_entries - 1) // num_entries
         tiled = projected.repeat(repeats, 1)
         return tiled[:target_entries]
-    
+
     def forward(self, indices: torch.Tensor) -> torch.Tensor:
         if indices.dim() != 1:
             raise ValueError(
