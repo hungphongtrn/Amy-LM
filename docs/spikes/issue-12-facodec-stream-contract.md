@@ -279,21 +279,59 @@ features = Features({
 
 ## Preprocessing to MOSS-Audio Data Flow
 
-```
-Preprocessing (facodec_encoder.py)
-├── Audio → FACodec Encoder → enc_out
-├── enc_out → FACodec Decoder → vq_id[6, B, T80], spk_embs[B, timbre_dim]
-├── vq_id[0] → prosody_codebooks_idx
-├── vq_id[1:2] averaged → content_codebooks_idx
-├── vq_id[3:5] averaged → acoustic_codebooks_idx (WAS: timbre_codebooks_idx)
-└── spk_embs → timbre_embedding (CURRENTLY DISCARDED — needs extraction)
+### Shape Legend
+- `T80`: FACodec frame count at 80 Hz (varies by utterance duration)
+- `T12`: MOSS-Audio frame count at 12.5 Hz (T12 ≈ round(T80 / 6.4))
+- `D`: MOSS-Audio hidden dimension (2560)
+- `B`: Batch size
+- `D_timbre`: Timbre vector dimension (256)
 
-MOSS-Audio Training (Forward Pass)
-├── prosody_codebooks_idx → ProsodyEmbedding → TemporalPool(80→12.5) → p_t
-├── content_codebooks_idx → ContentEmbedding → TemporalPool(80→12.5) → c_t [DISABLED]
-├── acoustic_codebooks_idx → AcousticEmbedding → TemporalPool(80→12.5) → a_t
-└── timbre_embedding → TimbreProjection → broadcast → t_t (no pooling!)
+```text
+Preprocessing (facodec_encoder.py)
+  Raw audio waveform, 16 kHz
+        │
+        ▼
+  FACodec encoder/decoder
+        │
+        ├──→ vq_id[:1]   → prosody_codebooks_idx    (1, T80) int64
+        ├──→ vq_id[1:3]  → content_codebooks_idx    (2, T80) int64
+        ├──→ vq_id[3:]   → acoustic_codebooks_idx   (3, T80) int64
+        └──→ spk_embs    → timbre_vector            (256,) float32
+
+Issue #8 training (forward pass)
+  audio waveform ────────────→ MOSS-Audio encoder ──→ Semantic Stream S_t   [B, T12, D]
+  prosody_codebooks_idx ────→ ProsodyEmbedding ─────→ TemporalPool ──→ P_t  [B, T12, D]
+  content_codebooks_idx ────→ ContentEmbedding ─────→ TemporalPool ──→ C_t  [B, T12, D]  [DISABLED]
+  acoustic_codebooks_idx ───→ AcousticEmbedding ────→ TemporalPool ──→ A_t  [B, T12, D]  [OPTIONAL]
+  timbre_vector ────────────→ TimbreProjection ─────→ broadcast ────→ T_t  [B, T12, D]
+
+  ResidualFusion (gated additive):
+      H_t = LayerNorm(S_t + λ_p·P_t + λ_c·C_t + λ_a·A_t + λ_t·T_t)
+
+  D = MOSS-Audio hidden dim (2560)
+  T80 = FACodec frame count at 80 Hz
+  T12 = MOSS-Audio frame count at 12.5 Hz
+  λ_* = learnable per-stream scalar gates, zero-initialized
+
+Key design rules:
+- Timbre Vector (T_t) is broadcast across time; NEVER passes through TemporalPool.
+- All VQ streams (P_t, C_t, A_t) pass through TemporalPool after embedding.
+- [DISABLED] = excluded from both module instantiation and forward() per Stream Activation Config.
+- [OPTIONAL] = included only if stream_config allows it; otherwise excluded entirely.
 ```
+
+### Acoustic Stream Recommendation
+
+Issue #8 should include Prosody Stream and Timbre Vector first. Acoustic Stream 
+should remain optional unless the experiment explicitly needs residual acoustic 
+detail, because it risks injecting speaker/environment artifacts beyond the 
+social-prosody hypothesis.
+
+First experiment fusion (prosody only):
+    H_t = LayerNorm(S_t + λ_p·P_t)
+
+Full experiment fusion (prosody + timbre):
+    H_t = LayerNorm(S_t + λ_p·P_t + λ_t·T_t)
 
 ## Current Implementation Audit
 
