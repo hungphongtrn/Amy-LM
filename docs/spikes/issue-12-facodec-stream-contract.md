@@ -574,14 +574,40 @@ class ResidualFusion(nn.Module):
 
 ## Issue #8 Blocker Recommendation
 
-**Status**: BLOCKED on Issue #12 completion.
+**Status: APPROVED TO PROCEED with conditions.**
 
-Issue #8 (Prosody Stream Integration) assumes `timbre_codebooks_idx` contains timbre data. This spike reveals it actually contains averaged acoustic residual indices. Continuing with Issue #8 would:
-1. Build the wrong embedding architecture
-2. Wire Acoustic Stream into a module expecting Timbre Vector
-3. Create technical debt requiring rework
+The FACodec contract has been verified against a real checkpoint run. All tensor
+shapes match the documented contract. The corrected specs for #6 preprocessing and
+#7 modules are published and ready.
 
-**Recommendation**: Complete Issue #12 preprocessing fixes first, then resume Issue #8.
+### Conditions for issue #8
+
+1. **Preprocessing contract (#6) must be implemented first** — #8 consumes
+   `prosody_codebooks_idx` and `timbre_vector` from the preprocessed dataset.
+   These fields do not exist in the current dataset output format.
+
+2. **Module refactor (#7) must be implemented first** — #8 uses `TimbreProjection`
+   (not `TimbreEmbedding`) and per-stream lambda gates in `ResidualFusion`. Neither
+   exists in the current codebase.
+
+3. **Minimum viable surface:** Issue #8 can start coding in parallel with #6/#7
+   fixes by implementing against the corrected interface specs in this spike report.
+   The actual integration will fail until #6/#7 land, but module code can be written.
+
+4. **Recommended first experiment:** Prosody + Timbre (λ_p enabled, λ_t enabled,
+   λ_c disabled, λ_a disabled). See the Acoustic Stream Recommendation in the
+   data flow section for rationale.
+
+### What changes between current state and corrected state
+
+| Component | Current (broken) | Corrected |
+|-----------|-----------------|-----------|
+| Preprocessing output field | `timbre_codebooks_idx: Sequence(int64)` | `acoustic_codebooks_idx: Sequence(Sequence(int64))` |
+| Missing preprocessing field | *(none)* | `timbre_vector: Sequence(float32)` D=256 |
+| Timbre module | `TimbreEmbedding([B])` discrete lookup | `TimbreProjection([B, 256])` continuous projection |
+| Fusion gates | Single `_lambda` for (prosody+timbre) | Per-stream `lambda_p, lambda_c, lambda_a, lambda_t` |
+| Acoustic stream module | *(none)* | `AcousticEmbedding(B, 3, T80)` multi-codebook sum |
+| Content stream module | *(none)* | `ContentEmbedding(B, 2, T80)` multi-codebook sum |
 
 ## Executable Verification
 
@@ -621,9 +647,26 @@ acoustic vq_id[3:]:(3, 1, 80)
 2. **Quantized is a list** of 3 tensors — matches the 3 residual codebook structure
 3. All VQ slicing matches the documented contract exactly
 
+## Acceptance Criteria Status
+
+- [x] FACodec tensor contract verified against Amphion source/checkpoint
+  - Local checkpoint run confirmed: vq_id=(6,B,80), spk_embs=(B,256)
+  - Amphion README evidence recorded with source URL
+
+- [x] CONTEXT.md updated with Acoustic Stream, FACodec Content Stream, per-stream lambda, Stream Dimensionality Contract, Stream Activation Config
+  - Already updated during 2026-05-06 grill session; verified in Phase 1 audit
+
+- [x] #6 schema documented with corrected field names, shapes, and types
+  - Field migration table, FACodecEncoder return contract, HF Features schema completed
+
+- [x] #7 module set documented with corrected modules and interfaces
+  - Module migration table, interface specs for all 6 modules completed
+
+- [x] Blocker recommendation for #8 documented (this section)
+
 ## Open Questions
 
-1. ~~**Timbre Vector dimensionality**: What is the exact shape of `spk_embs` from FACodec?~~ **RESOLVED**: Confirmed `spk_embs` is `(256,)` float32 per utterance (batch=1 gives `(1, 256)` → squeeze to `(256,)`)
+1. ~~**Timbre Vector dimensionality**: What is the exact shape of `spk_embs` from FACodec?~~ **RESOLVED**: Confirmed `spk_embs` is `(256,)` float32 per utterance (batch=1 gives `(1, 256)` → squeeze to `(256,)`)`
 2. **Acoustic Stream storage**: Should `acoustic_codebooks_idx` store `[3, T80]` as nested sequence or keep averaging? (Averaging loses information)
 3. **Backward compatibility**: Do we reprocess all datasets or provide migration script?
 4. **Embedding strategy**: Should Timbre Vector use learned projection (random init) or FACodec warm-start vectors?
