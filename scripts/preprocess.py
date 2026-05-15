@@ -122,6 +122,11 @@ Examples:
         default=None,
         help="Dataset config/subset name (e.g., 'emns' for CAMEO). Only needed for multi-config datasets."
     )
+    parser.add_argument(
+        "--local-dir",
+        action="store_true",
+        help="Load dataset from local Arrow directory instead of HuggingFace Hub."
+    )
     
     return parser
 
@@ -194,7 +199,8 @@ def main(
     device: str,
     output_dir: str,
     no_push: bool,
-    config: Optional[str] = None
+    config: Optional[str] = None,
+    local_dir: bool = False,
 ) -> int:
     """Main preprocessing pipeline.
     
@@ -255,12 +261,23 @@ def main(
     print("-" * 60)
     
     try:
-        processed_dataset = processor.process_dataset(
-            dataset_name=dataset,
-            split=split,
-            max_samples=max_samples,
-            config=config
-        )
+        if local_dir:
+            from datasets import Dataset
+
+            source = Dataset.load_from_disk(dataset)
+            processed_dataset = processor.process_dataset(
+                dataset_name=source,
+                split=split,
+                max_samples=max_samples,
+                config=config,
+            )
+        else:
+            processed_dataset = processor.process_dataset(
+                dataset_name=dataset,
+                split=split,
+                max_samples=max_samples,
+                config=config,
+            )
     except KeyboardInterrupt:
         print("\n\n⚠️  Interrupted by user. Exiting gracefully...")
         return 130
@@ -368,7 +385,8 @@ def cli_entry_point() -> int:
         device=args.device,
         output_dir=args.output_dir,
         no_push=args.no_push,
-        config=args.config
+        config=args.config,
+        local_dir=args.local_dir,
     )
 
 

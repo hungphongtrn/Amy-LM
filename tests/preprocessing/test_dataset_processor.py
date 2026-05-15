@@ -114,7 +114,7 @@ class TestDatasetProcessor:
             
             # Verify all required columns are present
             required_columns = [
-                "dataset", "id", "audio",
+                "dataset", "id", "label", "audio",
                 "prosody_codebooks_idx", "content_codebooks_idx", 
                 "acoustic_codebooks_idx", "timbre_vector"
             ]
@@ -342,7 +342,7 @@ class TestDatasetProcessor:
             
             # Verify all columns are present
             required_columns = [
-                "dataset", "id", "audio",
+                "dataset", "id", "label", "audio",
                 "prosody_codebooks_idx", "content_codebooks_idx",
                 "acoustic_codebooks_idx", "timbre_vector"
             ]
@@ -351,6 +351,53 @@ class TestDatasetProcessor:
             
             # Verify row count matches
             assert len(loaded) == len(result)
+
+    def test_process_dataset_includes_label_column(self, processor):
+        """Processed rows should copy label from source sarcasm column."""
+        mock_data = self._create_synthetic_dataset(num_samples=3)
+        mock_data["sarcasm"] = [0, 1, 0]
+
+        with patch("preprocessing.dataset_processor.load_dataset") as mock_load:
+            from datasets import Dataset
+
+            mock_dataset = Dataset.from_dict(mock_data)
+            mock_load.return_value = mock_dataset
+
+            result = processor.process_dataset(dataset_name="test/dataset", split="train")
+
+            for i, row in enumerate(result):
+                assert "label" in row
+                assert row["label"] == mock_data["sarcasm"][i]
+
+    def test_process_dataset_handles_missing_label(self, processor):
+        """Processed rows should use -1 when source has no label columns."""
+        mock_data = self._create_synthetic_dataset(num_samples=2)
+
+        with patch("preprocessing.dataset_processor.load_dataset") as mock_load:
+            from datasets import Dataset
+
+            mock_dataset = Dataset.from_dict(mock_data)
+            mock_load.return_value = mock_dataset
+
+            result = processor.process_dataset(dataset_name="test/dataset", split="train")
+
+            for row in result:
+                assert row["label"] == -1
+
+    def test_process_dataset_with_local_dataset(self, processor):
+        """process_dataset should accept a preloaded local Dataset object."""
+        from datasets import Dataset
+
+        mock_data = self._create_synthetic_dataset(num_samples=2)
+        mock_data["label"] = [1, 0]
+        local_dataset = Dataset.from_dict(mock_data)
+
+        result = processor.process_dataset(dataset_name=local_dataset, split="train")
+
+        assert len(result) == 2
+        assert "label" in result.column_names
+        for row in result:
+            assert row["dataset"] == "local_dataset"
 
     def test_save_creates_directory_structure(self, processor, temp_output_dir):
         """save() should create directory structure for repo_id."""

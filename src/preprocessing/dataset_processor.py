@@ -23,7 +23,7 @@ Example:
     >>> processor.save(dataset, "user/processed-dataset")
 """
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from pathlib import Path
 import numpy as np
 import torch
@@ -94,8 +94,8 @@ class DatasetProcessor:
     
     def process_dataset(
         self, 
-        dataset_name: str, 
-        split: str, 
+        dataset_name: Union[str, Dataset], 
+        split: Optional[str] = None,
         max_samples: Optional[int] = None,
         batch_size: int = 8,
         config: Optional[str] = None,
@@ -131,10 +131,15 @@ class DatasetProcessor:
             Samples that fail encoding are skipped but processing continues.
             Check the tqdm output for failure count.
         """
-        if config:
+        if isinstance(dataset_name, Dataset):
+            source_dataset = dataset_name
+            ds_name_str = "local_dataset"
+        elif config:
             source_dataset = load_dataset(dataset_name, config, split=split)
+            ds_name_str = dataset_name
         else:
             source_dataset = load_dataset(dataset_name, split=split)
+            ds_name_str = dataset_name
         
         if max_samples is not None:
             source_dataset = source_dataset.select(range(min(max_samples, len(source_dataset))))
@@ -145,11 +150,11 @@ class DatasetProcessor:
         audio_batch: List[torch.Tensor] = []
         pending_entries: List[tuple] = []
         
-        for idx, sample in enumerate(tqdm(source_dataset, desc=f"Processing {dataset_name}")):
+        for idx, sample in enumerate(tqdm(source_dataset, desc=f"Processing {ds_name_str}")):
             try:
                 audio_tensor = self._extract_audio_from_sample(sample)
                 audio_batch.append(audio_tensor)
-                pending_entries.append((sample, dataset_name, idx))
+                pending_entries.append((sample, ds_name_str, idx))
                 
                 if len(audio_batch) >= batch_size or idx == len(source_dataset) - 1:
                     results = self.facodec.encode_batch(audio_batch)
@@ -179,6 +184,7 @@ class DatasetProcessor:
         features = Features({
             "dataset": Value("string"),
             "id": Value("string"),
+            "label": Value("int64"),
             "audio": HFAudio(sampling_rate=16000),
             # prosody: single codebook [T80] -> Sequence(int64)
             "prosody_codebooks_idx": Sequence(Value("int64")),
@@ -265,6 +271,12 @@ class DatasetProcessor:
             audio_array = audio_array.astype(np.float32)
 
         sample_id = sample.get("id", f"row_{row_idx}")
+        if "sarcasm" in sample:
+            label = sample["sarcasm"]
+        elif "label" in sample:
+            label = sample["label"]
+        else:
+            label = -1
         
         # Convert tensors to nested lists
         # prosody: [1, T] -> squeeze to [T] -> list
@@ -282,6 +294,7 @@ class DatasetProcessor:
         return {
             "dataset": dataset_name,
             "id": sample_id,
+            "label": label,
             "audio": {"array": audio_array, "sampling_rate": sampling_rate},
             "prosody_codebooks_idx": prosody_indices,
             "content_codebooks_idx": content_indices,
