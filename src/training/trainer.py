@@ -19,6 +19,9 @@ class AmyTrainer:
         log_wandb: bool = False,
         is_baseline: bool = False,
     ) -> None:
+        if grad_accum_steps < 1:
+            raise ValueError(f"grad_accum_steps must be >= 1, got {grad_accum_steps}")
+
         self.model = model
         self.device = device
         self.optimizer = torch.optim.AdamW(
@@ -33,7 +36,23 @@ class AmyTrainer:
     def training_step(
         self, batch: tuple[torch.Tensor, ...]
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Run one forward pass and compute classification loss."""
+        """Run one forward pass and compute classification loss.
+
+        Accepts batch of exactly 4 or 6 elements.
+        Collated batch: (audio, prosody, timbre, labels, audio_lengths, prosody_lengths)
+        Simple batch:   (audio, prosody, timbre, labels)
+        """
+        n = len(batch)
+        if n != 4 and n != 6:
+            raise ValueError(
+                f"Expected batch of 4 or 6 elements, got {n}. "
+                f"Use collate_mustard for collation or TensorDataset with 4 elements."
+            )
+        if self.is_baseline and n != 4:
+            raise ValueError(
+                f"Baseline mode expects batch of 4 elements (audio, _, _, labels), got {n}."
+            )
+
         audio, prosody, timbre, labels = batch[:4]
         audio = audio.to(self.device)
         labels = labels.to(self.device)
@@ -50,13 +69,16 @@ class AmyTrainer:
 
     def train_epoch(self, dataloader) -> dict[str, float]:
         """Train for one epoch and return train metrics."""
+        n_batches = len(dataloader)
+        if n_batches == 0:
+            raise ValueError("Dataloader is empty — cannot train an epoch.")
+
         self.model.train()
         total_loss = 0.0
         all_preds = []
         all_labels = []
 
         self.optimizer.zero_grad()
-        n_batches = len(dataloader)
 
         for i, batch in enumerate(dataloader):
             loss, logits, labels = self.training_step(batch)
@@ -87,6 +109,10 @@ class AmyTrainer:
     @torch.no_grad()
     def evaluate(self, dataloader) -> dict[str, float]:
         """Evaluate and return validation metrics."""
+        n_batches = len(dataloader)
+        if n_batches == 0:
+            raise ValueError("Dataloader is empty — cannot evaluate.")
+
         self.model.eval()
         total_loss = 0.0
         all_preds = []
@@ -101,7 +127,7 @@ class AmyTrainer:
         all_preds = torch.cat(all_preds)
         all_labels = torch.cat(all_labels)
         metrics = self._compute_metrics(all_preds, all_labels, prefix="val")
-        metrics["val_loss"] = total_loss / len(dataloader)
+        metrics["val_loss"] = total_loss / n_batches
         return metrics
 
     def _compute_metrics(
