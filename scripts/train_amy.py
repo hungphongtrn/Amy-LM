@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.data.mustard_dataset import MustardDataset, collate_mustard, create_mustard_splits
+from src.data.mustard_dataset import collate_mustard, create_mustard_splits
 from src.models import AmyForProsodyClassification, BaselineClassifier
 from src.models.codebook_utils import load_prosody_codebook_vectors
 from src.training.trainer import AmyTrainer
