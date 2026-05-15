@@ -4,6 +4,7 @@ from .pooling import TemporalPool
 from .fusion import ResidualFusion
 from .moss_audio import MossAudioWrapper
 from .amy_classifier import AmyForProsodyClassification
+from .baseline_classifier import BaselineClassifier
 
 __all__ = [
     "ProsodyEmbedding",
@@ -14,4 +15,5 @@ __all__ = [
     "ResidualFusion",
     "MossAudioWrapper",
     "AmyForProsodyClassification",
+    "BaselineClassifier",
 ]
