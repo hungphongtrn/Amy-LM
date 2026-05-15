@@ -10,6 +10,7 @@ import pytest
 import torch
 import numpy as np
 from pathlib import Path
+import importlib.util
 from unittest.mock import patch, MagicMock
 from typing import Generator
 
@@ -399,6 +400,21 @@ class TestDatasetProcessor:
         for row in result:
             assert row["dataset"] == "local_dataset"
 
+    def test_process_dataset_with_local_dataset_tag(self, processor):
+        """process_dataset should use dataset_tag for local Dataset input."""
+        from datasets import Dataset
+
+        mock_data = self._create_synthetic_dataset(num_samples=2)
+        local_dataset = Dataset.from_dict(mock_data)
+
+        result = processor.process_dataset(
+            dataset_name=local_dataset,
+            dataset_tag="my_local_source",
+        )
+
+        for row in result:
+            assert row["dataset"] == "my_local_source"
+
     def test_save_creates_directory_structure(self, processor, temp_output_dir):
         """save() should create directory structure for repo_id."""
         mock_data = self._create_synthetic_dataset(num_samples=1)
@@ -497,3 +513,24 @@ class TestDatasetProcessor:
             assert len(row["content_codebooks_idx"]) > 0
             # Output should have 16kHz sampling rate
             assert row["audio"]["sampling_rate"] == 16000
+
+
+def test_preprocess_cli_accepts_local_dir_flag():
+    """CLI parser should recognize --local-dir and set it to True."""
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "preprocess.py"
+    spec = importlib.util.spec_from_file_location("preprocess_script", script_path)
+    preprocess_script = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(preprocess_script)
+
+    parser = preprocess_script.create_parser()
+    args = parser.parse_args(
+        [
+            "--dataset", "org/ds",
+            "--split", "train",
+            "--output-repo", "org/out",
+            "--local-dir",
+        ]
+    )
+
+    assert args.local_dir is True

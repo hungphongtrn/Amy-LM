@@ -96,18 +96,28 @@ class DatasetProcessor:
         self, 
         dataset_name: Union[str, Dataset], 
         split: Optional[str] = None,
+        dataset_tag: Optional[str] = None,
         max_samples: Optional[int] = None,
         batch_size: int = 8,
         config: Optional[str] = None,
     ) -> Dataset:
         """Process a dataset through FACodec encoder.
         
-        Loads a dataset from Hugging Face Hub, processes audio samples
-        through FACodec in batches, and returns a new dataset with codebook indices.
+        Loads a dataset (from Hugging Face Hub or a pre-loaded Dataset object),
+        processes audio samples through FACodec in batches, and returns a new
+        dataset with codebook indices.
         
         Args:
-            dataset_name: Hugging Face dataset name (e.g., "user/dataset")
-            split: Dataset split to load (e.g., "train", "validation", "test")
+            dataset_name: Either:
+                - Hugging Face dataset name (e.g., "user/dataset"), or
+                - A pre-loaded Hugging Face Dataset object.
+            split: Dataset split to load (e.g., "train", "validation", "test").
+                Required when dataset_name is a string; ignored when
+                dataset_name is already a Dataset object.
+            dataset_tag: Optional tag stored in the output "dataset" column.
+                Useful when dataset_name is a Dataset object. Defaults to
+                "local_dataset" for Dataset input, or dataset_name when input is
+                a string.
             max_samples: Maximum number of samples to process (None for all)
             batch_size: Number of samples to encode at once through FACodec.
                 Larger values increase GPU throughput but also memory usage.
@@ -117,6 +127,7 @@ class DatasetProcessor:
             A HF Dataset with columns:
                 - dataset: Source dataset name
                 - id: Unique sample ID
+                - label: Integer class label from source sample (default: -1 if missing)
                 - audio: Audio dict with array and sampling_rate
                 - prosody_codebooks_idx: List of prosody indices [T80]
                 - content_codebooks_idx: Nested list of content indices [2, T80]
@@ -133,13 +144,13 @@ class DatasetProcessor:
         """
         if isinstance(dataset_name, Dataset):
             source_dataset = dataset_name
-            ds_name_str = "local_dataset"
+            ds_name_str = dataset_tag or "local_dataset"
         elif config:
             source_dataset = load_dataset(dataset_name, config, split=split)
-            ds_name_str = dataset_name
+            ds_name_str = dataset_tag or dataset_name
         else:
             source_dataset = load_dataset(dataset_name, split=split)
-            ds_name_str = dataset_name
+            ds_name_str = dataset_tag or dataset_name
         
         if max_samples is not None:
             source_dataset = source_dataset.select(range(min(max_samples, len(source_dataset))))
