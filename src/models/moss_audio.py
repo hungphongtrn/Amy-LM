@@ -78,6 +78,8 @@ class MossAudioWrapper(nn.Module):
         with torch.no_grad():
             if audio.dim() != 2:
                 raise ValueError(f"Expected audio shape [B, T_audio], got {tuple(audio.shape)}")
+            if audio.shape[0] == 0:
+                return torch.empty(0, 0, 2560, device=self.device, dtype=self.model.dtype)
 
             mels = [self.processor._extract_mel(audio[i].detach().cpu()) for i in range(audio.shape[0])]
             seqlens = torch.tensor([mel.shape[-1] for mel in mels], dtype=torch.long)

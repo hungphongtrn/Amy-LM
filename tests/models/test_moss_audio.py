@@ -47,8 +47,25 @@ class TestMossAudioWrapper:
         """Should handle different audio lengths in a batch via padding."""
         wrapper = MossAudioWrapper(device=device)
 
-        # Different lengths, same batch
-        audio = torch.randn(2, 48000, device=device)  # 3s
+        audio_1s = torch.randn(1, 16000, device=device)   # 1s
+        audio_3s = torch.randn(1, 48000, device=device)   # 3s
+        semantic_1s = wrapper.encode_semantic(audio_1s)
+        semantic_3s = wrapper.encode_semantic(audio_3s)
+
+        assert semantic_1s.dim() == 3
+        assert semantic_3s.dim() == 3
+        assert semantic_1s.shape[0] == 1
+        assert semantic_3s.shape[0] == 1
+        # 3s should have ~3x more frames than 1s
+        ratio = semantic_3s.shape[1] / semantic_1s.shape[1]
+        assert 2.0 <= ratio <= 4.0, (
+            f"Expected ~3x frames for 3s vs 1s, got {ratio:.2f}"
+        )
+
+    def test_encode_semantic_empty_batch(self, device):
+        """Empty batch should return empty tensor without crashing."""
+        wrapper = MossAudioWrapper(device=device)
+
+        audio = torch.empty(0, 16000, device=device)
         semantic = wrapper.encode_semantic(audio)
-        assert semantic.dim() == 3
-        assert semantic.shape[0] == 2
+        assert semantic.shape == (0, 0, 2560)
