@@ -2,12 +2,14 @@
 from .embedding import ProsodyEmbedding, TimbreProjection, AcousticEmbedding, ContentEmbedding
 from .pooling import TemporalPool
 from .fusion import ResidualFusion
+from .moss_audio import MossAudioWrapper
 
 __all__ = [
     "ProsodyEmbedding",
     "TimbreProjection",
-    "AcousticEmbedding", 
+    "AcousticEmbedding",
     "ContentEmbedding",
     "TemporalPool",
     "ResidualFusion",
+    "MossAudioWrapper",
 ]
