@@ -46,6 +46,7 @@ class AmyForProsodyClassification(nn.Module):
         output_rate: float = 12.5,
         timbre_dim: int = 256,
         vocab_size: int = 1024,
+        gradient_checkpointing: bool = False,
     ) -> None:
         super().__init__()
         self.device = torch.device(device)
@@ -88,6 +89,9 @@ class AmyForProsodyClassification(nn.Module):
 
         self._freeze_backbone()
         self._ensure_facodec_trainable()
+
+        if gradient_checkpointing:
+            self.get_language_model().gradient_checkpointing_enable()
 
     def _freeze_backbone(self) -> None:
         for param in self.wrapper.parameters():

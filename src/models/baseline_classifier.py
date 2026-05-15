@@ -21,6 +21,7 @@ class BaselineClassifier(nn.Module):
         device: torch.device | str = "cpu",
         num_classes: int = 2,
         hidden_dim: int = 2560,
+        gradient_checkpointing: bool = False,
     ) -> None:
         super().__init__()
         self.device = torch.device(device)
@@ -33,6 +34,9 @@ class BaselineClassifier(nn.Module):
 
         self._freeze_backbone()
         self._ensure_head_trainable()
+
+        if gradient_checkpointing:
+            self.get_language_model().gradient_checkpointing_enable()
 
     def _freeze_backbone(self) -> None:
         for param in self.wrapper.parameters():

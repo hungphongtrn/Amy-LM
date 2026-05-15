@@ -48,14 +48,19 @@ def parse_args():
         help="Model mode: baseline (MOSS-Audio + Linear) or amy (with FACodec streams)",
     )
     p.add_argument("--epochs", type=int, default=10)
-    p.add_argument("--batch-size", type=int, default=2)
+    p.add_argument("--batch-size", type=int, default=1)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--weight-decay", type=float, default=0.01)
     p.add_argument(
         "--grad-accum",
         type=int,
-        default=4,
+        default=8,
         help="Gradient accumulation steps (effective batch = batch_size * grad_accum)",
+    )
+    p.add_argument(
+        "--grad-checkpoint",
+        action="store_true",
+        help="Enable gradient checkpointing on Qwen3 LM to reduce VRAM usage",
     )
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--wandb", action="store_true", help="Enable W&B logging")
@@ -119,12 +124,16 @@ def main():
     # Model
     is_baseline = args.mode == "baseline"
     if is_baseline:
-        model = BaselineClassifier(device=device)
+        model = BaselineClassifier(
+            device=device,
+            gradient_checkpointing=args.grad_checkpoint,
+        )
     else:
         vectors = load_prosody_codebook_vectors(args.facodec_checkpoint)
         model = AmyForProsodyClassification(
             warm_start_vectors=vectors,
             device=device,
+            gradient_checkpointing=args.grad_checkpoint,
         )
     model = model.to(device)
 
