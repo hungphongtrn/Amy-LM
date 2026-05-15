@@ -3,14 +3,14 @@
 > **For agentic workers:** Use subagent-driven-development. Start with the current phase — don't read ahead.
 
 ## Quick Status
-- **Current Phase:** Phase 4 — Training & Evaluation
-- **Next Up:** Phase 4 — Training & Evaluation
-- **Overall Progress:** 3/4 phases complete
+- **Current Phase:** Phase 4 — Training & Evaluation (plan detailed)
+- **Next Up:** Phase 4 implementation
+- **Overall Progress:** 3/4 phases complete (Phase 4 plan written, awaiting implementation)
 
 ## Start Here
 New implementer? Read in this order:
 1. [strategy.md](./strategy.md) — Understand the big picture (5 min)
- 2. [Current phase document](./phase-03-data-pipeline.md) — Only the phase you're implementing (15 min)
+2. [Current phase document](./phase-04-training-evaluation.md) — Only the phase you're implementing (30 min)
 3. [decisions.md](./decisions.md) — Context on choices made (optional, 5 min)
 
 **Do NOT read future phases.** They're stubbed and will change based on Phase 1 learnings.
