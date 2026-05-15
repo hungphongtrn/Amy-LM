@@ -81,6 +81,8 @@ class TestBaselineAmyEquivalence:
         amy.classifier.load_state_dict(deepcopy(baseline.classifier.state_dict()))
         assert torch.equal(baseline.classifier.weight, amy.classifier.weight)
 
+        baseline.eval()
+        amy.eval()
         with torch.no_grad():
             logits_baseline = baseline(audio)
             logits_amy = amy(audio, prosody_indices, timbre_vector)

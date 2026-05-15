@@ -39,8 +39,11 @@ class BaselineClassifier(nn.Module):
             param.requires_grad = False
 
     def _ensure_head_trainable(self) -> None:
-        for param in self.classifier.parameters():
-            param.requires_grad = True
+        for name, module in self.named_children():
+            if name in ("wrapper",):
+                continue
+            for param in module.parameters():
+                param.requires_grad = True
 
     def get_language_model(self) -> nn.Module:
         return self.wrapper.language_model
