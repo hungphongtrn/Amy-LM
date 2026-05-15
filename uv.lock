@@ -174,6 +174,8 @@ dependencies = [
     { name = "torch" },
     { name = "torchaudio" },
     { name = "tqdm" },
+    { name = "transformers" },
+    { name = "wandb" },
 ]
 
 [package.optional-dependencies]
@@ -235,9 +237,11 @@ requires-dist = [
     { name = "torchaudio", marker = "extra == 'preprocessing'", specifier = ">=2.9.1" },
     { name = "tqdm", specifier = ">=4.66.0" },
     { name = "tqdm", marker = "extra == 'preprocessing'", specifier = ">=4.66.0" },
+    { name = "transformers", specifier = ">=4.57.3" },
     { name = "transformers", marker = "extra == 'alignment'", specifier = ">=4.35.0" },
     { name = "transformers", marker = "extra == 'llm'", specifier = ">=4.35.0" },
     { name = "transformers", marker = "extra == 'wavlm'", specifier = ">=4.35.0" },
+    { name = "wandb", specifier = ">=0.23.1" },
 ]
 provides-extras = ["alignment", "wavlm", "llm", "upload", "preprocessing"]
 
