@@ -53,3 +53,27 @@
 **Decision:** Access input dim via `wrapper.audio_adapter.gate_proj.in_features` and output dim via `wrapper.audio_adapter.down_proj.out_features` in tests. The wrapper API (`encode_semantic()`) abstracts this entirely.
 **Rationale:** These are test-only internals; the public API is unaffected. Adapter output dim (2560) matches Qwen3 hidden_size as required.
 **Consequences:** If MOSS-Audio updates its GatedMLP structure, the structural tests will need updating. The wrapper's `encode_semantic()` will continue working as long as `audio_encoder()` and `audio_adapter()` accept the same call signatures.
+
+## 2026-05-15: Phase 2 detailed — Codebook extraction as standalone utility
+**Context:** The `ProsodyEmbedding` warm-start path needs raw FACodec codebook vectors `[1024, 8]` from `quantizer.0.layers.0._codebook.weight` in `ns3_facodec_decoder.bin`.
+**Decision:** Create `src/models/codebook_utils.py` with `load_prosody_codebook_vectors()` as a standalone utility, not embedded inside `AmyForProsodyClassification`.
+**Rationale:** Codebook extraction is a one-time initialization step. Separating it keeps the model constructor clean (accepts `warm_start_vectors: Tensor`) and makes the utility reusable across different model variants and scripts.
+**Consequences:** The model constructor requires pre-loaded vectors; the caller is responsible for providing them. This matches issue #8's spec: "FACodec encoder is not loaded during training."
+
+## 2026-05-15: Phase 2 detailed — TemporalPool auto-alignment (no target_len override)
+**Context:** Need pool output frames to equal MOSS-Audio's T_moss. `TemporalPool` computes `target_len = round(duration_sec * output_rate)` internally.
+**Decision:** Use `TemporalPool` as-is without adding a `target_len` parameter. The math works: `round(T80 * 12.5 / 80)` always equals the actual MOSS-Audio frame count for the same audio duration.
+**Rationale:** Both FACodec (80 Hz) and MOSS-Audio (~12.5 Hz) use deterministic conv-based downsampling from the same 16kHz input. The ratio is consistent. Adding a target_len override introduces an untested code path with no real benefit.
+**Consequences:** Phase 2 includes a temporal alignment test that asserts `P.shape[1] == T_moss` to catch any edge case early. If an edge case is found later, we can add alignment padding/trimming in the model forward.
+
+## 2026-05-15: Phase 2 detailed — Timbre broadcast in model forward, not in fusion
+**Context:** `ResidualFusion.forward()` expects `timbre: [B, T, D]` (pre-broadcast). `TimbreProjection.forward()` returns utterance-level `[B, 2560]`.
+**Decision:** Handle the broadcast from `[B, 2560]` → `[B, T_moss, 2560]` inside `AmyForProsodyClassification.forward()`, not inside fusion or projection.
+**Rationale:** Fusion is a general-purpose module that shouldn't know about utterance-vs-frame semantics. Projection transforms the vector. The model orchestrator (Amy) owns the spatial broadcasting logic.
+**Consequences:** Broadcasting uses `torch.unsqueeze(1).expand(-1, T_moss, -1)`. This is correct because timbre is per-utterance — same vector repeats across all frames.
+
+## 2026-05-15: Phase 2 detailed — Language model called with inputs_embeds, input_ids=None
+**Context:** MOSS-Audio's own forward path calls `self.language_model(input_ids=None, attention_mask=..., inputs_embeds=inputs_embeds, ...)`. We need frame-level hidden states, not text generation.
+**Decision:** Call `language_model(inputs_embeds=H)` without `input_ids` or `attention_mask`. Extract `last_hidden_state` for pooling.
+**Rationale:** Qwen3 handles `input_ids=None` + `inputs_embeds` natively. No text tokens are involved. Mean-pooling over the frame dimension produces the utterance representation for the classifier. The default attention mask behavior is acceptable for this pilot — later experiments can tune mask strategies.
+**Consequences:** If Qwen3 defaults to causal attention, each output frame sees itself and earlier frames. This is acceptable for a classification pilot. Bidirectional attention can be explored later.
