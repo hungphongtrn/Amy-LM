@@ -19,8 +19,12 @@ A third-party factorized neural audio codec (Microsoft, arXiv:2403.03100). Produ
 _Avoid_: FAcodec, FA codec
 
 **MOSS-Audio**:
-An open-source audio understanding model (OpenMOSS, Apache 2.0). 4B variant used as the semantic backbone for Amy LM. Produces continuous encoder features at 12.5 Hz with DeepStack cross-layer injection.
+An open-source audio understanding model (OpenMOSS, Apache 2.0). 4B variant used as the semantic backbone for the issue #8 pilot. Architecture: Whisper-style audio encoder → GatedMLP adapter → Qwen3 language model (hidden dim 2560). We extract sub-modules (`audio_encoder`, `audio_adapter`, `language_model`) from the loaded `MossAudioModel` rather than calling its generative `forward()`.
 _Avoid_: MOSS, audio model, backbone
+
+**Amy Classifier Head**:
+The issue #8 pilot model: `AmyForProsodyClassification`. Wraps MOSS-Audio sub-modules with FACodec embedding tables and a classification head. Forward path: audio encoder → audio adapter → ResidualFusion(prosody stream) → Qwen3 language model → mean-pool frames → Linear(2560→2). No text tokens, no DeepStack, no LM head. Trained with CrossEntropyLoss for binary sarcasm classification.
+_Avoid_: classification wrapper, downstream model
 
 ### Architecture Concepts
 
@@ -75,6 +79,14 @@ Adding new embedding dimensions that exist explicitly for prosody/timbre, not me
 _Avoid_: Embedding expansion, modality extension
 
 ### Training
+
+**Training Loop**:
+Vanilla PyTorch (no Lightning, no HF Trainer). Single optimizer, single forward/backward per step. Chosen over PyTorch Lightning because (1) no GAN dual-optimizer complexity, (2) avoids Lightning's memory overhead with the 4B Qwen3 backbone, (3) the loop is ~50 lines and easier to debug.
+_Avoid_: Trainer, LightningModule
+
+**MUStARD Formulation**:
+Binary sarcasm classification. Input: raw audio waveform + FACodec prosody indices (from preprocessing). MOSS-Audio computes mel spectrograms internally. Output: 2-class logits trained with CrossEntropyLoss.
+_Avoid_: multi-label, multi-class (binary classification only in the simplest training row)
 
 **λ (Lambda)**:
 A family of learnable per-stream scalar gates: λ_p (Prosody), λ_a (Acoustic), λ_c (FACodec Content), λ_t (Timbre). Each initialized at zero. Zero-init guarantees the model equals MOSS-Audio at step 0. Individual gates enable clean ablation — freeze a gate at zero to disable its stream.
