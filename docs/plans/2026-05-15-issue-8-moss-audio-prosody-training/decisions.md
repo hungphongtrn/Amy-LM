@@ -77,3 +77,9 @@
 **Decision:** Call `language_model(inputs_embeds=H)` without `input_ids` or `attention_mask`. Extract `last_hidden_state` for pooling.
 **Rationale:** Qwen3 handles `input_ids=None` + `inputs_embeds` natively. No text tokens are involved. Mean-pooling over the frame dimension produces the utterance representation for the classifier. The default attention mask behavior is acceptable for this pilot — later experiments can tune mask strategies.
 **Consequences:** If Qwen3 defaults to causal attention, each output frame sees itself and earlier frames. This is acceptable for a classification pilot. Bidirectional attention can be explored later.
+
+## 2026-05-15: Phase 2 complete — dtype bridging and frame alignment
+**Context:** MOSS-Audio produces `bfloat16` semantic embeddings; FACodec modules produce `float32`. The `language_model` has `bfloat16` weights. Pooled prosody frames can differ from T_moss (e.g., 1s audio: MOSS gives 13 frames, pool computes `round(12.5)=12`).
+**Decision:** In `AmyForProsodyClassification.forward()`: convert semantic to `float32` for fusion, then convert fused `H` to `lm_dtype` before LM forward, convert LM output back to `float32` for classifier. Add an explicit `F.adaptive_avg_pool1d` alignment step when `P.shape[1] != T_moss`.
+**Rationale:** Fusion and FACodec modules operate in float32 (training precision). Language model expects its native dtype. The classifier is float32. Frame alignment via adaptive pooling is robust to edge cases without modifying `TemporalPool`.
+**Consequences:** The dtype bridge adds `.float()` and `.to(dtype=lm_dtype)` calls. These are cheap (tensor metadata ops) and handled in no-grad context where possible.
