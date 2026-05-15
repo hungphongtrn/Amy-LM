@@ -30,7 +30,7 @@ class MustardDataset(Dataset):
     def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, idx: int):
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         audio_arr, prosody_list, timbre_list, label = self.samples[idx]
         audio = torch.tensor(audio_arr, dtype=torch.float32)
         prosody = torch.tensor(prosody_list, dtype=torch.long).unsqueeze(0)
@@ -38,7 +38,9 @@ class MustardDataset(Dataset):
         return audio, prosody, timbre, label
 
 
-def collate_mustard(batch: list) -> tuple:
+def collate_mustard(
+    batch: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]]
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Collate variable-length MUStARD samples into a batch."""
     audios, prosodies, timbres, labels = zip(*batch)
 
@@ -61,6 +63,16 @@ def create_mustard_splits(
     val_frac: float = 0.1,
 ):
     """Create random train/val/test dataset splits."""
+    if not (0 < train_frac < 1):
+        raise ValueError(f"train_frac must be in (0, 1), got {train_frac}")
+    if not (0 < val_frac < 1):
+        raise ValueError(f"val_frac must be in (0, 1), got {val_frac}")
+    if train_frac + val_frac >= 1.0:
+        raise ValueError(
+            f"train_frac + val_frac ({train_frac + val_frac}) must be < 1.0 "
+            f"to leave room for test split"
+        )
+
     dataset = MustardDataset(parquet_path)
     n = len(dataset)
     train_n = int(n * train_frac)

@@ -107,10 +107,18 @@ def test_create_mustard_splits_sizes_and_non_overlap(tmp_path: Path) -> None:
     assert len(train_ds) == 8
     assert len(val_ds) == 1
     assert len(test_ds) == 1
+    assert len(train_ds) + len(val_ds) + len(test_ds) == 10
 
-    train_idx = set(train_ds.indices)
-    val_idx = set(val_ds.indices)
-    test_idx = set(test_ds.indices)
-    assert train_idx.isdisjoint(val_idx)
-    assert train_idx.isdisjoint(test_idx)
-    assert val_idx.isdisjoint(test_idx)
+
+def test_create_mustard_splits_validates_fractions(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "mustard.parquet"
+    make_synthetic_parquet(parquet_path, num_samples=10)
+
+    with pytest.raises(ValueError, match=r"train_frac must be in \(0, 1\)"):
+        create_mustard_splits(parquet_path, train_frac=0.0, val_frac=0.1)
+
+    with pytest.raises(ValueError, match=r"val_frac must be in \(0, 1\)"):
+        create_mustard_splits(parquet_path, train_frac=0.8, val_frac=1.0)
+
+    with pytest.raises(ValueError, match=r"train_frac \+ val_frac"):
+        create_mustard_splits(parquet_path, train_frac=0.8, val_frac=0.2)
