@@ -87,18 +87,21 @@ def test_collate_mustard_pads_audio_and_prosody() -> None:
         ),
     ]
 
-    audio, prosody, timbre, labels = collate_mustard(batch)
+    audio, prosody, timbre, labels, audio_lengths, prosody_lengths = collate_mustard(batch)
     assert audio.shape == (2, 15)
     assert prosody.shape == (2, 1, 3)
     assert timbre.shape == (2, 256)
     assert labels.shape == (2,)
     assert labels.dtype == torch.long
+    assert torch.equal(audio_lengths, torch.tensor([10, 15], dtype=torch.long))
+    assert torch.equal(prosody_lengths, torch.tensor([3, 2], dtype=torch.long))
 
     assert torch.equal(audio[0, 10:], torch.zeros(5, dtype=torch.float32))
     assert torch.equal(prosody[1, 0, 2:], torch.zeros(1, dtype=torch.long))
 
 
-def test_create_mustard_splits_sizes_and_non_overlap(tmp_path: Path) -> None:
+def test_create_mustard_splits_sizes(tmp_path: Path) -> None:
+    """create_mustard_splits should produce expected split sizes."""
     parquet_path = tmp_path / "mustard.parquet"
     make_synthetic_parquet(parquet_path, num_samples=10)
 

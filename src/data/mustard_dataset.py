@@ -40,8 +40,24 @@ class MustardDataset(Dataset):
 
 def collate_mustard(
     batch: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]]
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Collate variable-length MUStARD samples into a batch."""
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
+    """Collate variable-length MUStARD samples into a batch.
+
+    Returns:
+        audio_padded: Padded audio waveforms with shape [B, T_audio_max].
+        prosody_padded: Padded prosody indices with shape [B, 1, T_prosody_max].
+        timbre_stacked: Stacked timbre vectors with shape [B, 256].
+        labels_stacked: Class labels with shape [B].
+        audio_lengths: Unpadded audio lengths with shape [B].
+        prosody_lengths: Unpadded prosody lengths with shape [B].
+    """
     audios, prosodies, timbres, labels = zip(*batch)
 
     max_audio = max(a.shape[0] for a in audios)
@@ -52,8 +68,17 @@ def collate_mustard(
 
     timbre_stacked = torch.stack(timbres)
     labels_stacked = torch.tensor(labels, dtype=torch.long)
+    audio_lengths = torch.tensor([a.shape[0] for a in audios], dtype=torch.long)
+    prosody_lengths = torch.tensor([p.shape[1] for p in prosodies], dtype=torch.long)
 
-    return audio_padded, prosody_padded, timbre_stacked, labels_stacked
+    return (
+        audio_padded,
+        prosody_padded,
+        timbre_stacked,
+        labels_stacked,
+        audio_lengths,
+        prosody_lengths,
+    )
 
 
 def create_mustard_splits(
