@@ -35,3 +35,21 @@
 **Decision:** Training batch loads only audio waveform + FACodec indices + labels. MOSS-Audio encoder runs during forward pass to produce S_t.
 **Rationale:** Semantic frames are large ([T, 2560] per sample), and MOSS-Audio encoding is considered fast enough. Keeps the data pipeline simple.
 **Consequences:** Forward pass includes the audio encoder computation. Gradient checkpointing on the encoder may be needed for memory.
+
+## 2026-05-15: Phase 1 complete — MOSS-Audio vendor approach
+**Context:** `AutoModel.from_pretrained()` failed because the MOSS-Audio HF repo lacks `modeling_moss_audio.py`. The model class lives in the GitHub source repo (`OpenMOSS/MOSS-Audio`).
+**Decision:** Vendored the entire MOSS-Audio source repo to `vendor/MOSS-Audio/` (matching the existing `vendor/Amphion/` pattern). Added `vendor/MOSS-Audio/src/` to `sys.path` for local imports.
+**Rationale:** `MossAudioModel.from_pretrained()` with `trust_remote_code=True` requires the full model class. The GitHub repo provides it; vendoring keeps the dependency self-contained.
+**Consequences:** Patched one vendored import: `from src.configuration_moss_audio` → `from configuration_moss_audio` in `vendor/MOSS-Audio/src/modeling_moss_audio.py`. All MOSS-Audio source files tracked in git despite `.gitignore` (via force-add, same as Amphion).
+
+## 2026-05-15: Phase 1 complete — MOSS-Audio frame rate and encoding
+**Context:** Assumed ~12.5 Hz frame rate from Whisper 200x downsample. Actual MOSS-Audio encoder pipeline differs.
+**Decision:** Confirmed actual path: 16kHz audio → mel spectrogram (hop=160, ~100 Hz) → conv downsample (/8) → ~12.5 Hz. 2s audio → ~25 frames (not ~250 as originally estimated).
+**Rationale:** Verified empirically through tests. The 25-frame count for 2s audio is now the ground truth encoded in test assertions.
+**Consequences:** `TemporalPool` downsampling from FACodec 80 Hz to MOSS-Audio's actual 12.5 Hz will use `target_len = MOSS_output_frames` (not a hardcoded constant). Phase 2 must use the actual frame count from `encode_semantic()`.
+
+## 2026-05-15: Phase 1 complete — GatedMLP adapter structure
+**Context:** Assumed `audio_adapter` would have `.in_features` and `.out_features` attributes like a plain Linear. MOSS-Audio uses a `GatedMLP` structure.
+**Decision:** Access input dim via `wrapper.audio_adapter.gate_proj.in_features` and output dim via `wrapper.audio_adapter.down_proj.out_features` in tests. The wrapper API (`encode_semantic()`) abstracts this entirely.
+**Rationale:** These are test-only internals; the public API is unaffected. Adapter output dim (2560) matches Qwen3 hidden_size as required.
+**Consequences:** If MOSS-Audio updates its GatedMLP structure, the structural tests will need updating. The wrapper's `encode_semantic()` will continue working as long as `audio_encoder()` and `audio_adapter()` accept the same call signatures.
