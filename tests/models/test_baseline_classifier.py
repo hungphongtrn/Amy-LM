@@ -38,6 +38,19 @@ class TestBaselineFreeze:
         for param in model.classifier.parameters():
             assert param.requires_grad
 
+    def test_norm_is_trainable(self, model):
+        """LayerNorm is trainable (matches ResidualFusion norm in Amy model)."""
+        for param in model.norm.parameters():
+            assert param.requires_grad
+
+    def test_only_wrapper_norm_classifier_params_exist(self, model):
+        """No extra trainable modules beyond wrapper, norm, classifier."""
+        trainable = {n for n, p in model.named_parameters() if p.requires_grad}
+        assert all(
+            n.startswith("norm.") or n.startswith("classifier.")
+            for n in trainable
+        ), f"Unexpected trainable params: {trainable - {'norm', 'classifier'}}"
+
 
 class TestBaselineAmyEquivalence:
     """BaselineClassifier must produce identical logits to AmyForProsodyClassification
