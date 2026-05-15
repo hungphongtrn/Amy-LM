@@ -3,9 +3,9 @@
 > **For agentic workers:** Use subagent-driven-development. Start with the current phase — don't read ahead.
 
 ## Quick Status
-- **Current Phase:** Phase 4 — Training & Evaluation (plan detailed)
-- **Next Up:** Phase 4 implementation
-- **Overall Progress:** 3/4 phases complete (Phase 4 plan written, awaiting implementation)
+- **Current Phase:** Phase 4 — Training & Evaluation (complete)
+- **Next Up:** None — all 4 phases complete. Ready for GPU training run.
+- **Overall Progress:** 4/4 phases complete
 
 ## Start Here
 New implementer? Read in this order:
@@ -22,7 +22,7 @@ New implementer? Read in this order:
 | 1 — MOSS-Audio Backbone | ✅ Complete | MOSS-Audio loads, sub-modules extracted, semantic stream verified (11 tests) | [phase-01](./phase-01-moss-audio-backbone.md) |
 | 2 — Amy Model Assembly | ✅ Complete | `AmyForProsodyClassification` forward pass working end-to-end (17 tests) | [phase-02](./phase-02-amy-model-assembly.md) |
 | 3 — Data Pipeline | ✅ Complete | MUStARD FACodec preprocessed, training Dataset/DataLoader working (147 tests) | [phase-03](./phase-03-data-pipeline.md) |
-| 4 — Training & Evaluation | 🔲 Pending | Baseline + Amy model trained, metrics reported | [phase-04](./phase-04-training-evaluation.md) |
+| 4 — Training & Evaluation | ✅ Complete | Baseline + Amy model trained, metrics reported. 7 commits: BaselineClassifier, AmyTrainer, train_amy CLI | [phase-04](./phase-04-training-evaluation.md) |
 
 ## Key Decisions
 See [decisions.md](./decisions.md) for rationale on major choices.
