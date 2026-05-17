@@ -57,12 +57,14 @@ class AmyTrainer:
         audio = audio.to(self.device)
         labels = labels.to(self.device)
 
-        if self.is_baseline:
-            logits = self.model(audio)
-        else:
-            prosody = prosody.to(self.device)
-            timbre = timbre.to(self.device)
-            logits = self.model(audio, prosody, timbre)
+        use_autocast = self.device.type == "cuda"
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_autocast):
+            if self.is_baseline:
+                logits = self.model(audio)
+            else:
+                prosody = prosody.to(self.device)
+                timbre = timbre.to(self.device)
+                logits = self.model(audio, prosody, timbre)
 
         loss = self.criterion(logits, labels)
         return loss, logits.detach().cpu(), labels.detach().cpu()
@@ -159,9 +161,14 @@ class AmyTrainer:
 
     def save_checkpoint(self, path: str) -> None:
         """Save model, optimizer, and epoch state."""
+        model_state = {
+            k: v
+            for k, v in self.model.state_dict().items()
+            if not k.startswith("wrapper.")
+        }
         torch.save(
             {
-                "model_state_dict": self.model.state_dict(),
+                "model_state_dict": model_state,
                 "optimizer_state_dict": self.optimizer.state_dict(),
                 "epoch": self.current_epoch,
                 "is_baseline": self.is_baseline,
@@ -172,6 +179,13 @@ class AmyTrainer:
     def load_checkpoint(self, path: str) -> None:
         """Load model, optimizer, and epoch state."""
         ckpt = torch.load(path, map_location=self.device, weights_only=True)
-        self.model.load_state_dict(ckpt["model_state_dict"])
+        incompatible = self.model.load_state_dict(ckpt["model_state_dict"], strict=False)
+        unexpected = [k for k in incompatible.unexpected_keys if not k.startswith("wrapper.")]
+        missing = [k for k in incompatible.missing_keys if not k.startswith("wrapper.")]
+        if unexpected or missing:
+            raise RuntimeError(
+                "Checkpoint/model mismatch after filtering frozen wrapper keys. "
+                f"unexpected={unexpected}, missing={missing}"
+            )
         self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         self.current_epoch = ckpt["epoch"]
