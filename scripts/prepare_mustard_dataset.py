@@ -34,31 +34,69 @@ def download_videos(raw_dir: Path):
             check=True,
         )
 
-    extract_dir = raw_dir / "mmsd_raw_data"
-    if extract_dir.exists():
-        print(f"  Already extracted: {extract_dir}")
+    # The zip extracts context_final/ and utterances_final/ directly into raw_dir
+    context_dir = raw_dir / "context_final"
+    if context_dir.exists():
+        print(f"  Already extracted to {context_dir}")
     else:
-        print(f"  Extracting to {extract_dir} ...")
+        print(f"  Extracting to {raw_dir} ...")
         subprocess.run(["unzip", "-q", str(zip_path), "-d", str(raw_dir)], check=True)
 
-    return extract_dir
+    # Use context_final (includes surrounding context, not just utterance)
+    return raw_dir / "context_final"
+
+
+def _extract_utterance_number(uid: str) -> str:
+    """Extract the utterance number from a MUStARD++ key.
+
+    Keys can be:
+      - "1_S01E01_128_u" (show_seasonEp_utterance_suffix) -> "128"
+      - "2_60_u" (show_utterance_suffix) -> "60"
+      - "2_60" (show_utterance) -> "60"
+    """
+    parts = uid.split("_")
+    for part in reversed(parts):
+        if part.isdigit():
+            return part
+    return uid
 
 
 def find_video_for_utterance(video_dir: Path, show: str, utterance_id: str) -> Path | None:
     """Find video file matching a MUStARD utterance.
 
-    Video files are named like '1_60.mp4'. The first part (show number)
-    maps to the show, the second part is the utterance offset within that show.
+    Video files follow the pattern {show}_{utterance}_c.mp4 (context)
+    or {show}_{utterance}_t.mp4 (target).
+
+    'show' can be either a numeric ID (extracted from KEY) or text name
+    (from SHOW column). We use it directly and also try the numeric prefix
+    of the utterance_id.
     """
-    for ext in [".mp4", ".mkv", ".avi", ".webm"]:
-        candidate = video_dir / f"{utterance_id}{ext}"
+    utt_num = _extract_utterance_number(utterance_id)
+
+    # Try with the provided show, and also with the numeric prefix of KEY
+    show_candidates = [show]
+    key_prefix = utterance_id.split("_")[0]
+    if key_prefix != show:
+        show_candidates.append(key_prefix)
+
+    candidates = []
+    for sc in show_candidates:
+        candidates.extend([
+            video_dir / f"{sc}_{utt_num}_c.mp4",
+            video_dir / f"{sc}_{utt_num}_t.mp4",
+            video_dir / f"{sc}_{utt_num}.mp4",
+        ])
+
+    for candidate in candidates:
         if candidate.exists():
             return candidate
 
-    pattern = f"**/{utterance_id}.*"
-    matches = list(video_dir.glob(pattern))
-    if matches:
-        return matches[0]
+    # Fallback: glob search
+    for sc in show_candidates:
+        glob_pattern = f"{sc}_{utt_num}.*"
+        matches = list(video_dir.glob(glob_pattern))
+        if matches:
+            return matches[0]
 
     return None
 
@@ -180,7 +218,7 @@ def main():
         print("=== Step 1: Download videos ===")
         video_dir = download_videos(raw_dir)
     else:
-        video_dir = raw_dir / "mmsd_raw_data"
+        video_dir = raw_dir / "context_final"
 
     if not csv_path.exists():
         print("=== Step 2: Download annotations ===")
