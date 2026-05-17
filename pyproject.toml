@@ -3,36 +3,40 @@ name = "amy-lm"
 version = "0.1.0"
 description = "Amy LM"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = "==3.12.*"
 dependencies = [
     "datasets>=2.15.0",
     "numpy>=1.24.0",
     "soundfile>=0.13.1",
-    "torch>=2.0.0",
-    "torchaudio>=2.9.1",
+    "torch>=2.10.0",
+    "torchaudio>=2.10.0",
+    "torchcodec>=0.1.0",
     "tqdm>=4.66.0",
     "transformers>=4.57.3",
     "wandb>=0.23.1",
+    "bitsandbytes>=0.45.0",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.0/flash_attn-2.8.3+cu130torch2.10-cp312-cp312-linux_x86_64.whl",
+    "accelerate>=1.12.0",
 ]
 
 [project.optional-dependencies]
 # Machine A: Alignment (System deps: ffmpeg, libsndfile1)
 alignment = [
     "transformers>=4.35.0",
-    "torch>=2.0.0",
+    "torch>=2.10.0",
     "soundfile>=0.12.0",
     "accelerate>=0.20.0",
     "nemo_toolkit[asr]"
 ]
 wavlm = [
     "transformers>=4.35.0",
-    "torch>=2.0.0",
+    "torch>=2.10.0",
     "soundfile>=0.12.0",
     "numpy>=1.24.0",
 ]
 llm = [
     "transformers>=4.35.0",
-    "torch>=2.0.0",
+    "torch>=2.10.0",
     "numpy>=1.24.0",
     "accelerate",
     "sentencepiece",
@@ -45,9 +49,23 @@ preprocessing = [
     "datasets>=2.15.0",
     "huggingface-hub>=0.20.0",
     "soundfile>=0.13.1",
-    "torchaudio>=2.9.1",
+    "torchaudio>=2.10.0",
     "tqdm>=4.66.0",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+torchaudio = { index = "pytorch-cu130" }
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
