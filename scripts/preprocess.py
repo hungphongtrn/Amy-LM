@@ -111,6 +111,12 @@ Examples:
         help="Local directory to save processed dataset. Default: data/processed"
     )
     parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=8,
+        help="Number of samples to encode at once through FACodec. Larger values increase GPU throughput (default: 8)"
+    )
+    parser.add_argument(
         "--no-push",
         action="store_true",
         help="Skip pushing to Hugging Face Hub (save locally only)"
@@ -201,6 +207,7 @@ def main(
     no_push: bool,
     config: Optional[str] = None,
     local_dir: bool = False,
+    batch_size: int = 8,
 ) -> int:
     """Main preprocessing pipeline.
     
@@ -212,6 +219,7 @@ def main(
         device: Device to run on
         output_dir: Local output directory
         no_push: If True, skip pushing to HF Hub
+        batch_size: Number of samples to encode at once
     
     Returns:
         Exit code (0 for success, 1 for error)
@@ -270,6 +278,7 @@ def main(
                 split=split,
                 max_samples=max_samples,
                 config=config,
+                batch_size=batch_size,
             )
         else:
             processed_dataset = processor.process_dataset(
@@ -277,6 +286,7 @@ def main(
                 split=split,
                 max_samples=max_samples,
                 config=config,
+                batch_size=batch_size,
             )
     except KeyboardInterrupt:
         print("\n\n⚠️  Interrupted by user. Exiting gracefully...")
@@ -387,6 +397,7 @@ def cli_entry_point() -> int:
         no_push=args.no_push,
         config=args.config,
         local_dir=args.local_dir,
+        batch_size=args.batch_size,
     )
 
 

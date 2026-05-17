@@ -181,6 +181,8 @@ class DatasetProcessor:
             except Exception as e:
                 sample_id = sample.get("id", f"row_{idx}")
                 failures.append((sample_id, str(e)))
+                audio_batch.clear()
+                pending_entries.clear()
         
         if failures:
             print(f"\n  {len(failures)} samples failed to process:")
