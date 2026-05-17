@@ -10,7 +10,7 @@ __pycache__/
 wandb/
 checkpoints/
 audio_samples/
-data/
+!/src/data/
 .data/
 .DS_STORE
 *.egg-info/
