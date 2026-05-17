@@ -55,14 +55,12 @@ class BaselineClassifier(nn.Module):
     def forward(self, audio: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
             semantic = self.wrapper.encode_semantic(audio)
-        semantic = semantic.float()
         semantic = self.norm(semantic)
 
         language_model = self.get_language_model()
         lm_dtype = next(language_model.parameters()).dtype
         h_lm = semantic.to(dtype=lm_dtype)
         lm_out = language_model(inputs_embeds=h_lm).last_hidden_state
-        lm_out = lm_out.float()
 
         pooled = lm_out.mean(dim=1)
         logits = self.classifier(pooled)

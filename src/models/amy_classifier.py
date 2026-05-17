@@ -125,7 +125,6 @@ class AmyForProsodyClassification(nn.Module):
         """
         with torch.no_grad():
             semantic = self.wrapper.encode_semantic(audio)
-        semantic = semantic.float()
         T_moss = semantic.shape[1]
 
         p_emb = self.prosody_embedding(prosody_indices)
@@ -144,7 +143,6 @@ class AmyForProsodyClassification(nn.Module):
         lm_dtype = next(language_model.parameters()).dtype
         H_lm = H.to(dtype=lm_dtype)
         lm_out = language_model(inputs_embeds=H_lm).last_hidden_state
-        lm_out = lm_out.float()
 
         pooled = lm_out.mean(dim=1)
         logits = self.classifier(pooled)

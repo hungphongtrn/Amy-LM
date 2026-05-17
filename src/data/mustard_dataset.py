@@ -6,6 +6,9 @@ import torch.nn.functional as F
 from datasets import Dataset as HFDataset
 from torch.utils.data import Dataset, random_split
 
+MAX_AUDIO_SAMPLES = 160000
+MAX_PRO_FRAMES = 800
+
 
 class MustardDataset(Dataset):
     """PyTorch Dataset for FACodec-preprocessed MUStARD parquet."""
@@ -60,16 +63,16 @@ def collate_mustard(
     """
     audios, prosodies, timbres, labels = zip(*batch)
 
-    max_audio = max(a.shape[0] for a in audios)
-    audio_padded = torch.stack([F.pad(a, (0, max_audio - a.shape[0])) for a in audios])
+    max_audio = min(max(a.shape[0] for a in audios), MAX_AUDIO_SAMPLES)
+    audio_padded = torch.stack([F.pad(a[:max_audio], (0, max_audio - min(a.shape[0], max_audio))) for a in audios])
 
-    max_pro = max(p.shape[1] for p in prosodies)
-    prosody_padded = torch.stack([F.pad(p, (0, max_pro - p.shape[1])) for p in prosodies])
+    max_pro = min(max(p.shape[1] for p in prosodies), MAX_PRO_FRAMES)
+    prosody_padded = torch.stack([F.pad(p[:, :max_pro], (0, max_pro - min(p.shape[1], max_pro))) for p in prosodies])
 
     timbre_stacked = torch.stack(timbres)
     labels_stacked = torch.tensor(labels, dtype=torch.long)
-    audio_lengths = torch.tensor([a.shape[0] for a in audios], dtype=torch.long)
-    prosody_lengths = torch.tensor([p.shape[1] for p in prosodies], dtype=torch.long)
+    audio_lengths = torch.tensor([min(a.shape[0], max_audio) for a in audios], dtype=torch.long)
+    prosody_lengths = torch.tensor([min(p.shape[1], max_pro) for p in prosodies], dtype=torch.long)
 
     return (
         audio_padded,
