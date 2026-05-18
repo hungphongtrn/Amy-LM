@@ -5,6 +5,7 @@ from .fusion import ResidualFusion
 from .moss_audio import MossAudioWrapper
 from .amy_classifier import AmyForProsodyClassification
 from .baseline_classifier import BaselineClassifier
+from .amy_lm import AmyLMConfig, AmyLM
 
 __all__ = [
     "ProsodyEmbedding",
@@ -16,4 +17,6 @@ __all__ = [
     "MossAudioWrapper",
     "AmyForProsodyClassification",
     "BaselineClassifier",
+    "AmyLMConfig",
+    "AmyLM",
 ]

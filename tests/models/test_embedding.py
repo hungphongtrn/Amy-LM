@@ -67,8 +67,8 @@ class TestProsodyEmbedding:
         out = emb(indices)
         assert out.shape == (2, 25, EMBED_DIM)
 
-    def test_warm_start_projector_is_frozen(self):
-        """Warm-start projector is static — no grad after init."""
+    def test_warm_start_projector_is_trainable(self):
+        """Warm-start projector is trainable for DPO."""
         codebook = torch.randn(PROSODY_VOCAB * 2, 32)
         emb = ProsodyEmbedding(
             vocab_size=PROSODY_VOCAB,
@@ -78,7 +78,7 @@ class TestProsodyEmbedding:
         )
         assert hasattr(emb, '_projector'), "projector should exist in warm_start mode"
         for name, param in emb.named_parameters():
-            assert not param.requires_grad, f"{name} should be frozen"
+            assert param.requires_grad, f"{name} should be trainable"
 
     def test_invalid_init_strategy_raises(self):
         with pytest.raises(ValueError, match="init_strategy"):

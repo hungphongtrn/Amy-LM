@@ -46,7 +46,7 @@ class ProsodyEmbedding(nn.Module):
             with torch.no_grad():
                 self._projector.weight.data.normal_(mean=0.0, std=0.02)
             for param in self._projector.parameters():
-                param.requires_grad = False
+                param.requires_grad = True
             self.register_buffer("_facodec_weights", warm_start_vectors.detach())
 
     @property
