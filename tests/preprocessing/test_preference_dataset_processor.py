@@ -1,7 +1,10 @@
+import unittest.mock
+
 import numpy as np
+import pytest
 from datasets import Dataset
 
-from src.preprocessing.facodec_encoder import FACodecEncoder
+from src.preprocessing.facodec_encoder import FACodecEncoder, FACodecStreams
 
 
 def _make_mock_preference_dataset(num_samples: int = 3) -> Dataset:
@@ -101,7 +104,7 @@ class TestPreferenceDatasetProcessor:
             assert sample["label"] == -1
 
     def test_save_roundtrip(self, tmp_path):
-        """Save to parquet and reload preserves all columns."""
+        """Save to parquet and reload preserves columns, row count, and key values."""
         dataset = _make_mock_preference_dataset()
         processor = _get_processor()
         result = processor.process_dataset(dataset)
@@ -114,6 +117,36 @@ class TestPreferenceDatasetProcessor:
         reloaded = Dataset.from_parquet(str(save_path))
         assert set(reloaded.column_names) == set(result.column_names)
         assert len(reloaded) == len(result)
+
+        # Value-level integrity
+        for i, (orig, rel) in enumerate(zip(result, reloaded)):
+            assert rel["id"] == orig["id"]
+            assert rel["chosen"] == orig["chosen"]
+            assert rel["rejected"] == orig["rejected"]
+            assert rel["label"] == -1
+            assert rel["dataset"] == "nvtts-preference"
+            assert abs(rel["cosine_similarity"] - orig["cosine_similarity"]) < 1e-6
+            assert len(rel["prosody_codebooks_idx"]) == len(orig["prosody_codebooks_idx"])
+            assert len(rel["timbre_vector"]) == 256
+
+    def test_cardinality_mismatch_raises(self):
+        """ValueError if encode_batch returns different count than inputs."""
+        import torch
+        from src.preprocessing.preference_dataset_processor import PreferenceDatasetProcessor
+
+        dataset = _make_mock_preference_dataset(2)
+        encoder = FACodecEncoder(device="cpu", force_mock=True)
+        processor = PreferenceDatasetProcessor(encoder, batch_size=2)
+
+        real_encode_batch = encoder.encode_batch
+
+        def short_encode_batch(audios):
+            result = real_encode_batch(audios)
+            return result[:1]  # return 1 stream for 2 inputs
+
+        with unittest.mock.patch.object(encoder, "encode_batch", side_effect=short_encode_batch):
+            with pytest.raises(ValueError, match="encode_batch returned"):
+                processor.process_dataset(dataset)
 
     def test_preserves_text_columns(self):
         """Text columns (chosen, rejected, rationale) survive unchanged."""

@@ -1,4 +1,8 @@
-"""Preference dataset processor for FACodec preference-pair preprocessing."""
+"""Preference dataset processor for FACodec preference-pair preprocessing.
+
+Encodes only prosody and timbre streams; content + acoustic are skipped.
+FACodecEncoder.encode_batch() returns List[FACodecStreams] — one per sample.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +15,8 @@ from datasets import Dataset, Features, Sequence, Value
 
 from src.preprocessing.facodec_encoder import FACodecEncoder
 
+DEFAULT_DATASET_TAG = "nvtts-preference"
+TIMBRE_DIM = 256
 
 PREFERENCE_FEATURES = Features(
     {
@@ -43,13 +49,19 @@ class PreferenceDatasetProcessor:
         self.encoder = encoder
         self.batch_size = batch_size
 
-    def process_dataset(self, dataset: Dataset, dataset_tag: str = "nvtts-preference") -> Dataset:
+    def process_dataset(self, dataset: Dataset, dataset_tag: str = DEFAULT_DATASET_TAG) -> Dataset:
         processed_rows: List[Dict[str, Any]] = []
 
         for start in range(0, len(dataset), self.batch_size):
             batch_rows = [dataset[i] for i in range(start, min(start + self.batch_size, len(dataset)))]
             audio_batch = [self._extract_audio_tensor(row) for row in batch_rows]
             streams_batch = self.encoder.encode_batch(audio_batch)
+
+            if len(streams_batch) != len(batch_rows):
+                raise ValueError(
+                    f"encode_batch returned {len(streams_batch)} streams "
+                    f"for {len(batch_rows)} inputs"
+                )
 
             for row, streams in zip(batch_rows, streams_batch):
                 processed_rows.append(self._build_processed_entry(row, streams, dataset_tag))
@@ -70,8 +82,20 @@ class PreferenceDatasetProcessor:
         return torch.from_numpy(array).float()
 
     def _build_processed_entry(self, row: Dict[str, Any], streams: Any, dataset_tag: str) -> Dict[str, Any]:
-        prosody = streams.prosody_codebooks_idx.squeeze(0).tolist()
-        timbre = streams.timbre_vector.tolist()
+        sample_id = row.get("id", "?")
+        prosody_tensor = streams.prosody_codebooks_idx
+        if prosody_tensor is None or prosody_tensor.numel() == 0:
+            raise ValueError(f"Empty prosody stream for sample {sample_id}")
+        prosody = prosody_tensor.squeeze(0).tolist()
+
+        timbre_tensor = streams.timbre_vector
+        if timbre_tensor is None or timbre_tensor.shape[-1] != TIMBRE_DIM:
+            raise ValueError(
+                f"Timbre vector has {timbre_tensor.shape[-1] if timbre_tensor is not None else 0} dims "
+                f"(expected {TIMBRE_DIM}) for sample {sample_id}"
+            )
+        timbre = timbre_tensor.tolist()
+
         audio = row["audio"]
         audio_array = audio.get("array") if isinstance(audio, dict) else audio
         if isinstance(audio_array, list):
