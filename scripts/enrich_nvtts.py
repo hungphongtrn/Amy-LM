@@ -57,10 +57,20 @@ def main() -> None:
     ds = load_nvtts()
     print(f"Loaded {len(ds)} samples across splits: {SPLITS}")
 
+    # Phase 1: use mock cache (no network). For production, replace with:
+    #   SpeakerCache.build("data/speaker_lookup.json")
     cache = SpeakerCache.from_mock()
 
     print("Enriching samples...")
-    enriched_rows = [enrich_sample(sample, cache) for sample in ds]
+    enriched_rows = []
+    failed = 0
+    for i, sample in enumerate(ds):
+        try:
+            enriched_rows.append(enrich_sample(sample, cache))
+        except Exception as e:
+            print(f"  WARNING: Failed sample {i}: {e}")
+            failed += 1
+    print(f"Enriched {len(enriched_rows)} samples ({failed} failed)")
     result = Dataset.from_list(enriched_rows)
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)

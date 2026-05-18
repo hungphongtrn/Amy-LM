@@ -145,6 +145,34 @@ class TestEnrichNVTTS:
         splits_called = [c.kwargs["split"] for c in mock_load.call_args_list]
         assert splits_called == ["train", "dev", "test"]
 
+    def test_main_handles_bad_samples(self, tmp_path):
+        """main() suppresses exceptions per sample, reports failures, and exits cleanly."""
+        from scripts.enrich_nvtts import main
+
+        bad_ds = Dataset.from_list([{
+            "audio": {"path": "a.wav", "array": b"\x00", "sampling_rate": 16000},
+            "Emotion": "happy",
+            "Initial text": "hello",
+            "Result": "hello",
+            "speaker_id": "ex01",
+            "data_name": "Expresso",
+            "gender": "f",
+        }])
+
+        call_count = [0]
+
+        def failing_enrich(sample, cache):
+            call_count[0] += 1
+            raise ValueError("simulated failure")
+
+        with patch("scripts.enrich_nvtts.OUTPUT_DIR", str(tmp_path / "nvtts_enriched")):
+            with patch("scripts.enrich_nvtts.enrich_sample", side_effect=failing_enrich):
+                with patch("scripts.enrich_nvtts.load_nvtts", return_value=bad_ds):
+                    main()
+
+        assert call_count[0] == 1  # enrich was attempted
+        # main() exited without raising — the exception was caught internally
+
     def test_main_saves_parquet(self, speaker_cache, tmp_path):
         """main() saves parquet to the expected output path."""
         from scripts.enrich_nvtts import main
