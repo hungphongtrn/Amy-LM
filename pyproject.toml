@@ -17,7 +17,7 @@ dependencies = [
     "bitsandbytes>=0.45.0",
     "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.0/flash_attn-2.8.3+cu130torch2.10-cp312-cp312-linux_x86_64.whl",
     "accelerate>=1.12.0",
-    "aiohttp>=3.13.2",
+    "openai>=2.37.0",
 ]
 
 [project.optional-dependencies]

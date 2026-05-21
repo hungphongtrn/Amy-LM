@@ -16,7 +16,7 @@ import signal
 import sys
 from typing import Any, Callable, Dict, List, Optional, Set
 
-import aiohttp
+from openai import AsyncOpenAI
 
 ENRICHED_PATH = "data/nvtts_enriched/nvtts_enriched.parquet"
 OUTPUT_PATH = "data/nvtts_pairs/pairs.jsonl"
@@ -51,9 +51,6 @@ EXAMPLE JSON OUTPUT:
     "rationale": "Responding to the literal words only.",
     "response": "I acknowledge what you said."
 }}"""
-
-MAX_RETRIES = 3
-BACKOFF_BASE = 2.0
 
 
 def build_good_prompt(
@@ -135,49 +132,20 @@ def load_existing_ids(pairs_path: str) -> Set[str]:
 
 
 async def call_deepseek(
-    session: aiohttp.ClientSession,
-    api_key: str,
+    client: AsyncOpenAI,
     prompt: str,
     semaphore: asyncio.Semaphore,
 ) -> Dict[str, Any]:
-    url = "https://api.deepseek.com/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": "deepseek-v4-flash",
-        "messages": [{"role": "user", "content": prompt}],
-        "response_format": {"type": "json_object"},
-        "temperature": 0.7,
-        "max_tokens": 2048,
-    }
-
     async with semaphore:
-        for attempt in range(MAX_RETRIES):
-            try:
-                async with session.post(url, json=payload, headers=headers) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        content = data["choices"][0]["message"]["content"]
-                        return parse_json_response(content)
-                    elif resp.status == 429:
-                        wait = BACKOFF_BASE ** attempt
-                        print(f"  Rate limited, backing off {wait:.0f}s...")
-                        await asyncio.sleep(wait)
-                        continue
-                    else:
-                        body = await resp.text()
-                        print(f"  API error {resp.status}: {body[:200]}")
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                print(f"  Network error (attempt {attempt + 1}): {e}")
-                if attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(BACKOFF_BASE ** attempt)
-                continue
-            except asyncio.CancelledError:
-                raise
-
-        raise RuntimeError(f"Failed after {MAX_RETRIES} retries")
+        response = await client.chat.completions.create(
+            model="deepseek-v4-flash",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.7,
+            max_tokens=2048,
+        )
+        content = response.choices[0].message.content
+        return parse_json_response(content)
 
 
 async def process_single_sample(
@@ -269,14 +237,17 @@ async def main_async(concurrency: int = 5) -> None:
     ds = Dataset.from_parquet(ENRICHED_PATH)
     print(f"Loaded {len(ds)} enriched samples from {ENRICHED_PATH}")
 
+    client = AsyncOpenAI(
+        api_key=api_key,
+        base_url="https://api.deepseek.com",
+        max_retries=3,
+    )
     semaphore = asyncio.Semaphore(concurrency)
 
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
+    async def api_caller(prompt: str) -> Dict[str, Any]:
+        return await call_deepseek(client, prompt, semaphore)
 
-        async def api_caller(prompt: str) -> Dict[str, Any]:
-            return await call_deepseek(session, api_key, prompt, semaphore)
-
-        await run(ds, OUTPUT_PATH, api_caller, concurrency=concurrency)
+    await run(ds, OUTPUT_PATH, api_caller, concurrency=concurrency)
 
 
 def main() -> None:
