@@ -8,6 +8,7 @@ Requires: DEEPSEEK_API_KEY environment variable.
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import os
@@ -16,8 +17,12 @@ import signal
 import sys
 from typing import Any, Callable, Dict, List, Optional, Set
 
+from dotenv import load_dotenv
+
 from openai import AsyncOpenAI
 from tqdm.asyncio import tqdm as async_tqdm
+
+load_dotenv()
 
 ENRICHED_PATH = "data/nvtts_enriched/nvtts_enriched.parquet"
 OUTPUT_PATH = "data/nvtts_pairs/pairs.jsonl"
@@ -180,9 +185,14 @@ async def run(
     output_path: str,
     api_call_fn: Callable,
     concurrency: int = 5,
+    stop_event: Optional[asyncio.Event] = None,
+    smoke: bool = False,
 ) -> None:
     existing_ids = load_existing_ids(output_path)
     pending = [s for s in dataset if s["id"] not in existing_ids]
+
+    if smoke:
+        pending = pending[:10]
 
     if not pending:
         print(f"All {len(dataset)} samples already processed in {output_path}", flush=True)
@@ -199,6 +209,8 @@ async def run(
         nonlocal failed_count
         try:
             pair = await process_single_sample(sample, api_call_fn)
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             async with lock:
                 failed_count += 1
@@ -210,10 +222,19 @@ async def run(
             f.write("\n")
 
     tasks = [asyncio.create_task(process_and_write(s)) for s in pending]
-    for coro in async_tqdm.as_completed(
-        tasks, desc="Generating pairs", total=total_pending,
-    ):
-        await coro
+
+    with async_tqdm(total=total_pending, desc="Generating pairs") as pbar:
+        for coro in asyncio.as_completed(tasks):
+            try:
+                await coro
+            except asyncio.CancelledError:
+                pass
+            pbar.update(1)
+
+            if stop_event and stop_event.is_set():
+                async_tqdm.write("Cancelling remaining tasks...")
+                for t in tasks:
+                    t.cancel()
 
     if failed_count:
         print(f"  {failed_count} samples failed", flush=True)
@@ -223,7 +244,7 @@ async def run(
     print(f"Done: {len(completed)}/{total} samples in {output_path}", flush=True)
 
 
-async def main_async(concurrency: int = 5) -> None:
+async def main_async(concurrency: int = 5, stop_event: Optional[asyncio.Event] = None, smoke: bool = False) -> None:
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
         print("ERROR: DEEPSEEK_API_KEY environment variable not set.")
@@ -237,17 +258,22 @@ async def main_async(concurrency: int = 5) -> None:
     client = AsyncOpenAI(
         api_key=api_key,
         base_url="https://api.deepseek.com",
-        max_retries=3,
+        max_retries=1,
+        timeout=30.0,
     )
     semaphore = asyncio.Semaphore(concurrency)
 
     async def api_caller(prompt: str) -> Dict[str, Any]:
         return await call_deepseek(client, prompt, semaphore)
 
-    await run(ds, OUTPUT_PATH, api_caller, concurrency=concurrency)
+    await run(ds, OUTPUT_PATH, api_caller, concurrency=concurrency, stop_event=stop_event, smoke=smoke)
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate response pairs via DeepSeek")
+    parser.add_argument("--smoke", action="store_true", help="Run smoke test: process only 10 samples")
+    args = parser.parse_args()
+
     sys.stdout.reconfigure(line_buffering=True)
     concurrency = int(os.environ.get("DEEPSEEK_CONCURRENCY", "5"))
 
@@ -260,7 +286,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, _on_sigint)
 
     try:
-        asyncio.run(main_async(concurrency=concurrency))
+        asyncio.run(main_async(concurrency=concurrency, stop_event=stop_event, smoke=args.smoke))
     except KeyboardInterrupt:
         pass
 
