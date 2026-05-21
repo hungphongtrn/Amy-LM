@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
+import signal
 import sys
 from typing import Any, Callable, Dict, List, Optional, Set
 
@@ -27,7 +29,14 @@ What the speaker said (including paralinguistic vocalizations in brackets):
 Emotion: {emotion_label}
 Speaker: {speaker_name}, {speaker_gender}, {speaker_age_context}, {speaker_nationality}
 
-Write a natural conversational response that accounts for the speaker's tone, emotion, and identity. Output as JSON with keys "rationale" and "response"."""
+Write a natural conversational response that accounts for the speaker's tone, emotion, and identity.
+Output JSON with keys "rationale" and "response".
+
+EXAMPLE JSON OUTPUT:
+{{
+    "rationale": "The speaker sounds happy, so I respond with enthusiasm.",
+    "response": "That sounds great!"
+}}"""
 
 BAD_PROMPT_TEMPLATE = """You are a conversation partner responding to someone who just spoke.
 
@@ -35,7 +44,13 @@ What the speaker said (transcript only):
 {bare_transcript}
 
 Write a natural conversational response based purely on the literal words, without any emotional or paralinguistic context.
-Output as JSON with keys "rationale" and "response"."""
+Output JSON with keys "rationale" and "response".
+
+EXAMPLE JSON OUTPUT:
+{{
+    "rationale": "Responding to the literal words only.",
+    "response": "I acknowledge what you said."
+}}"""
 
 MAX_RETRIES = 3
 BACKOFF_BASE = 2.0
@@ -64,14 +79,38 @@ def build_bad_prompt(bare_transcript: str) -> str:
 
 
 def parse_json_response(text: str) -> Dict[str, Any]:
+    # 1. Try direct parse
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
+        data = {}
+
+    # 2. Extract from markdown code block
+    if not (isinstance(data, dict) and "response" in data):
         if "```json" in text:
-            text = text.split("```json")[1].split("```")[0]
+            block = text.split("```json")[1].split("```")[0]
         elif "```" in text:
-            text = text.split("```")[1].split("```")[0]
-        data = json.loads(text)
+            block = text.split("```")[1].split("```")[0]
+        else:
+            block = text
+        try:
+            data = json.loads(block.strip())
+        except json.JSONDecodeError:
+            data = {}
+
+    # 3. Last resort: regex extract "response" and "rationale" fields
+    if not isinstance(data, dict) or "response" not in data:
+        response = ""
+        rationale = ""
+        resp_match = re.search(r'"response"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
+        if resp_match:
+            response = json.loads(f'"{resp_match.group(1)}"')
+        rat_match = re.search(r'"rationale"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
+        if rat_match:
+            rationale = json.loads(f'"{rat_match.group(1)}"')
+        if not response:
+            raise ValueError(f"Could not extract 'response' from text: {text[:300]}")
+        data = {"response": response, "rationale": rationale}
 
     if not isinstance(data, dict) or "response" not in data:
         raise ValueError(f"Unexpected JSON structure: {data}")
@@ -111,6 +150,7 @@ async def call_deepseek(
         "messages": [{"role": "user", "content": prompt}],
         "response_format": {"type": "json_object"},
         "temperature": 0.7,
+        "max_tokens": 2048,
     }
 
     async with semaphore:
@@ -134,6 +174,8 @@ async def call_deepseek(
                 if attempt < MAX_RETRIES - 1:
                     await asyncio.sleep(BACKOFF_BASE ** attempt)
                 continue
+            except asyncio.CancelledError:
+                raise
 
         raise RuntimeError(f"Failed after {MAX_RETRIES} retries")
 
@@ -174,31 +216,46 @@ async def run(
     pending = [s for s in dataset if s["id"] not in existing_ids]
 
     if not pending:
-        print(f"All {len(dataset)} samples already processed in {output_path}")
+        print(f"All {len(dataset)} samples already processed in {output_path}", flush=True)
         return
 
-    print(f"Processing {len(pending)} samples ({len(existing_ids)} already done)")
+    total_pending = len(pending)
+    print(f"Processing {total_pending} samples ({len(existing_ids)} already done)", flush=True)
 
-    semaphore = asyncio.Semaphore(concurrency)
+    completed_count = 0
+    failed_count = 0
+    lock = asyncio.Lock()
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     async def process_and_write(sample):
+        nonlocal completed_count, failed_count
         try:
             pair = await process_single_sample(sample, api_call_fn)
         except Exception as e:
-            print(f"  FAILED {sample['id']}: {e}")
+            async with lock:
+                failed_count += 1
+            print(f"  FAILED {sample['id']}: {e}", flush=True)
             return
 
         with open(output_path, "a") as f:
             json.dump(pair, f)
             f.write("\n")
 
+        async with lock:
+            completed_count += 1
+            if completed_count % 10 == 0 or completed_count == total_pending:
+                print(f"  Progress: {completed_count}/{total_pending} "
+                      f"({failed_count} failed)", flush=True)
+
     tasks = [process_and_write(s) for s in pending]
-    await asyncio.gather(*tasks)
+    try:
+        await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        pass
 
     total = len(dataset)
     completed = load_existing_ids(output_path)
-    print(f"Done: {len(completed)}/{total} samples in {output_path}")
+    print(f"Done: {len(completed)}/{total} samples in {output_path}", flush=True)
 
 
 async def main_async(concurrency: int = 5) -> None:
@@ -223,8 +280,21 @@ async def main_async(concurrency: int = 5) -> None:
 
 
 def main() -> None:
+    sys.stdout.reconfigure(line_buffering=True)
     concurrency = int(os.environ.get("DEEPSEEK_CONCURRENCY", "5"))
-    asyncio.run(main_async(concurrency=concurrency))
+
+    stop_event = asyncio.Event()
+
+    def _on_sigint(signum, frame):
+        print("\nInterrupted, finishing in-flight requests...", flush=True)
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, _on_sigint)
+
+    try:
+        asyncio.run(main_async(concurrency=concurrency))
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":
