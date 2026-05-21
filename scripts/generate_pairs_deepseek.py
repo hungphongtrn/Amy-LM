@@ -107,7 +107,7 @@ async def call_deepseek(
         "Content-Type": "application/json",
     }
     payload = {
-        "model": "deepseek-chat",
+        "model": "deepseek-v4-flash",
         "messages": [{"role": "user", "content": prompt}],
         "response_format": {"type": "json_object"},
         "temperature": 0.7,
@@ -209,7 +209,7 @@ async def main_async(concurrency: int = 5) -> None:
 
     from datasets import Dataset
 
-    ds = Dataset.from_parquet(ENRICHED_PATH)
+    ds = Dataset.from_parquet(ENRICHED_PATH).remove_columns(["audio"])
     print(f"Loaded {len(ds)} enriched samples from {ENRICHED_PATH}")
 
     semaphore = asyncio.Semaphore(concurrency)
