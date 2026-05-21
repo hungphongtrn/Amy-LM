@@ -209,7 +209,7 @@ async def main_async(concurrency: int = 5) -> None:
 
     from datasets import Dataset
 
-    ds = Dataset.from_parquet(ENRICHED_PATH).remove_columns(["audio"])
+    ds = Dataset.from_parquet(ENRICHED_PATH)
     print(f"Loaded {len(ds)} enriched samples from {ENRICHED_PATH}")
 
     semaphore = asyncio.Semaphore(concurrency)
