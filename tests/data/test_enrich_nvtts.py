@@ -1,10 +1,11 @@
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from datasets import Dataset
 
-from src.data.nv_tag_mapping import emojis_to_tags
+from src.data.nv_tag_mapping import emojis_to_tags, NV_EMOJI_TO_TAG
 from src.data.speaker_cache import SpeakerCache, resolve_age_context
 
 
@@ -76,16 +77,17 @@ class TestEnrichNVTTS:
         assert result == "unknown"
 
     def test_enrich_sample_produces_all_columns(self, speaker_cache, raw_sample_expresso):
-        """Enriched sample has all 10 output columns with correct values."""
+        """Enriched sample has all 9 text output columns (no audio)."""
         from scripts.enrich_nvtts import enrich_sample
 
         enriched = enrich_sample(raw_sample_expresso, speaker_cache)
         expected_cols = {
-            "id", "audio", "emotion_label", "speaker_name", "speaker_gender",
+            "id", "emotion_label", "speaker_name", "speaker_gender",
             "speaker_age_context", "speaker_nationality", "transcript_with_tags",
             "bare_transcript", "source",
         }
         assert expected_cols.issubset(set(enriched.keys()))
+        assert "audio" not in enriched
         assert enriched["transcript_with_tags"] == "hello [Breathing] world"
         assert enriched["bare_transcript"] == "hello world"
         assert enriched["speaker_name"] == "Jack"
@@ -129,79 +131,116 @@ class TestEnrichNVTTS:
         assert enriched["bare_transcript"] == ""
         assert enriched["transcript_with_tags"] == ""
 
-    def test_load_nvtts_uses_all_splits(self):
-        """load_nvtts loads train+dev+test and concatenates."""
-        from scripts.enrich_nvtts import load_nvtts
+    def test_enrich_sample_strips_nv_emojis_from_bare_transcript(self, speaker_cache):
+        """bare_transcript has all NV emoji markers stripped."""
+        from scripts.enrich_nvtts import enrich_sample
 
-        def make_split(split_name):
-            return Dataset.from_dict({"index": [split_name]})
+        # Pick two representative emojis from the mapping
+        emojis = list(NV_EMOJI_TO_TAG.keys())
+        e1, e2 = emojis[0], emojis[1]
 
-        with patch("scripts.enrich_nvtts.load_dataset") as mock_load:
-            mock_load.side_effect = lambda name, split, **kw: make_split(split)
-            result = load_nvtts()
-
-        assert len(result) == 3  # one row per split
-        assert mock_load.call_count == 3
-        splits_called = [c.kwargs["split"] for c in mock_load.call_args_list]
-        assert splits_called == ["train", "dev", "test"]
-
-    def test_main_handles_bad_samples(self, tmp_path):
-        """main() suppresses exceptions per sample, reports failures, and exits cleanly."""
-        from scripts.enrich_nvtts import main
-
-        bad_ds = Dataset.from_list([{
-            "audio": {"path": "a.wav", "array": b"\x00", "sampling_rate": 16000},
+        raw = {
+            "audio": {"path": "dummy.wav", "array": b"", "sampling_rate": 16000},
             "Emotion": "happy",
-            "Initial text": "hello",
-            "Result": "hello",
+            "Initial text": f"hello {e1} world {e2} today",
+            "Result": f"hello {e1} world {e2} today",
             "speaker_id": "ex01",
             "data_name": "Expresso",
-            "gender": "f",
-        }])
+            "gender": "m",
+        }
+        enriched = enrich_sample(raw, speaker_cache)
+        # bare_transcript should have no emojis
+        for e in (e1, e2):
+            assert e not in enriched["bare_transcript"], f"Emoji {repr(e)} not stripped from bare_transcript"
+        assert enriched["bare_transcript"] == "hello world today"
+        # transcript_with_tags should still have the [Tag] labels
+        tag1 = NV_EMOJI_TO_TAG[e1]
+        tag2 = NV_EMOJI_TO_TAG[e2]
+        assert tag1 in enriched["transcript_with_tags"]
+        assert tag2 in enriched["transcript_with_tags"]
 
-        call_count = [0]
-
-        def failing_enrich(sample, cache):
-            call_count[0] += 1
-            raise ValueError("simulated failure")
-
-        with patch("scripts.enrich_nvtts.OUTPUT_DIR", str(tmp_path / "nvtts_enriched")):
-            with patch("scripts.enrich_nvtts.enrich_sample", side_effect=failing_enrich):
-                with patch("scripts.enrich_nvtts.load_nvtts", return_value=bad_ds):
-                    main()
-
-        assert call_count[0] == 1  # enrich was attempted
-        # main() exited without raising — the exception was caught internally
-
-    def test_main_saves_parquet(self, speaker_cache, tmp_path):
-        """main() saves parquet to the expected output path."""
+    def test_main_calls_load_dataset_for_all_splits(self):
+        """main() loads train+dev+test via streaming load_dataset."""
         from scripts.enrich_nvtts import main
 
-        fake_ds = Dataset.from_dict({
-            "index": [0, 1],
+        call_args = []
+
+        def fake_load_dataset(name, split, streaming, **kw):
+            call_args.append(split)
+            return Dataset.from_dict({"index": [split]}).to_iterable_dataset()
+
+        with patch("scripts.enrich_nvtts.SpeakerCache.build", return_value=SpeakerCache.from_mock()):
+            with patch("scripts.enrich_nvtts.load_dataset", side_effect=fake_load_dataset):
+                with patch("scripts.enrich_nvtts.OUTPUT_DIR", "/tmp/nvtts_dummy"):
+                    import tempfile
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        with patch("scripts.enrich_nvtts.OUTPUT_DIR", tmpdir):
+                            main()
+
+        assert call_args == ["train", "dev", "test"]
+
+    def test_main_streaming_pipeline_works(self, speaker_cache, tmp_path):
+        """main() processes a streaming dataset with minimal data."""
+        import tempfile
+        from scripts.enrich_nvtts import main
+
+        streaming = Dataset.from_dict({
+            "index": ["sample_0"],
+            "audio": [{"path": "a.wav", "array": b"\x00", "sampling_rate": 16000}],
+            "Emotion": ["neutral"],
+            "Initial text": ["test"],
+            "Result": ["test \U0001f32c"],
+            "speaker_id": ["ex01"],
+            "data_name": ["Expresso"],
+            "gender": ["f"],
+        }).to_iterable_dataset()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("scripts.enrich_nvtts.SpeakerCache.build", return_value=speaker_cache):
+                with patch("scripts.enrich_nvtts.OUTPUT_DIR", tmpdir):
+                    with patch("scripts.enrich_nvtts.load_dataset", return_value=streaming):
+                        main()
+
+            out_path = Path(tmpdir) / "nvtts_enriched.parquet"
+            assert out_path.exists()
+            loaded = Dataset.from_parquet(str(out_path))
+            assert len(loaded) == 3  # one row per split (train/dev/test all get same mock)
+            assert "audio" not in loaded.column_names
+
+    def test_main_saves_text_parquet(self, speaker_cache, tmp_path):
+        """main() saves text-only parquet to the expected output path."""
+        import tempfile
+        from scripts.enrich_nvtts import main
+
+        fake_streaming_ds = Dataset.from_dict({
+            "index": ["0", "1"],
             "audio": [
                 {"path": "a.wav", "array": b"\x00", "sampling_rate": 16000},
                 {"path": "b.wav", "array": b"\x01", "sampling_rate": 16000},
             ],
             "Emotion": ["happy", "sad"],
             "Initial text": ["hello", "goodbye"],
-            "Result": ["hello 🌬️", "goodbye 😷"],
+            "Result": ["hello \U0001f32c", "goodbye \U0001f637"],
             "speaker_id": ["ex01", "id00012"],
             "data_name": ["Expresso", "VoxCeleb"],
             "gender": ["f", "m"],
-        })
+        }).to_iterable_dataset()
 
-        with patch("scripts.enrich_nvtts.OUTPUT_DIR", str(tmp_path / "nvtts_enriched")):
-            with patch("scripts.enrich_nvtts.load_nvtts", return_value=fake_ds):
-                main()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("scripts.enrich_nvtts.SpeakerCache.build", return_value=speaker_cache):
+                with patch("scripts.enrich_nvtts.OUTPUT_DIR", tmpdir):
+                    with patch("scripts.enrich_nvtts.load_dataset", return_value=fake_streaming_ds):
+                        main()
 
-        out_path = tmp_path / "nvtts_enriched" / "nvtts_enriched.parquet"
-        assert out_path.exists()
+            out_path = Path(tmpdir) / "nvtts_enriched.parquet"
+            assert out_path.exists()
 
-        loaded = Dataset.from_parquet(str(out_path))
-        assert len(loaded) == 2
-        assert set(loaded.column_names) == {
-            "id", "audio", "emotion_label", "speaker_name", "speaker_gender",
-            "speaker_age_context", "speaker_nationality", "transcript_with_tags",
-            "bare_transcript", "source",
-        }
+            loaded = Dataset.from_parquet(str(out_path))
+            assert len(loaded) == 6  # 2 rows × 3 splits (mock returns same ds for all)
+            assert set(loaded.column_names) == {
+                "id", "emotion_label", "speaker_name", "speaker_gender",
+                "speaker_age_context", "speaker_nationality", "transcript_with_tags",
+                "bare_transcript", "source",
+            }
+            assert "audio" not in loaded.column_names
+            assert loaded[0]["emotion_label"] == "happy"

@@ -19,12 +19,16 @@ A third-party factorized neural audio codec (Microsoft, arXiv:2403.03100). Produ
 _Avoid_: FAcodec, FA codec
 
 **MOSS-Audio**:
-An open-source audio understanding model (OpenMOSS, Apache 2.0). 4B variant used as the semantic backbone for the issue #8 pilot. Architecture: Whisper-style audio encoder → GatedMLP adapter → Qwen3 language model (hidden dim 2560). We extract sub-modules (`audio_encoder`, `audio_adapter`, `language_model`) from the loaded `MossAudioModel` rather than calling its generative `forward()`.
+An open-source audio understanding model (OpenMOSS, Apache 2.0). 4B variant used as the semantic backbone. Architecture: Whisper-style audio encoder → GatedMLP adapter → Qwen3 language model (hidden dim 2560). Two usage modes: (1) sub-module extraction for classification probes (issue #8), (2) full generative `MossAudioModel` forward-path inheritable by AmyLM for DPO training (issue #14).
 _Avoid_: MOSS, audio model, backbone
 
 **Amy Classifier Head**:
 The issue #8 pilot model: `AmyForProsodyClassification`. Wraps MOSS-Audio sub-modules with FACodec embedding tables and a classification head. Forward path: audio encoder → audio adapter → ResidualFusion(prosody stream) → Qwen3 language model → mean-pool frames → Linear(2560→2). No text tokens, no DeepStack, no LM head. Trained with CrossEntropyLoss for binary sarcasm classification.
 _Avoid_: classification wrapper, downstream model
+
+**AmyLM**:
+The HF-compatible Speech Language Model (issue #14). Inherits `MossAudioModel` directly, adding `ProsodyEmbedding`, `TimbreProjection`, `TemporalPool`, and `ResidualFusion` as permanent architecture modules. Overrides `forward()` to enrich audio embeddings with prosody/timbre before the `<audio>` placeholder-replacement step, then passes to Qwen3 for autoregressive text generation. Supports `save_pretrained`/`from_pretrained`/`generate()` and HF `DPOTrainer` integration. Trainable components: FACodec embedding projector, timbre projection, λ gates. Backbone (audio encoder, audio adapter, Qwen3) frozen by default — LoRA optionally applied for ablation.
+_Avoid_: classifier, wrapper model (it is a full model, not a wrapper)
 
 ### Architecture Concepts
 
@@ -65,7 +69,7 @@ The issue #8 training path: batches load audio and FACodec indices from the prep
 _Avoid_: Precomputed semantic frames
 
 **Stream Activation Config**:
-A YAML block controlling which FACodec streams participate in fusion: `prosody`, `content`, `acoustic`, `timbre` (each boolean). Modules and forward() build only active streams. Disabled streams are excluded from both module instantiation and the Residual Summation computation, not merely gated at λ=0.
+A configuration block (currently a Python dict in `AmyForProsodyClassification`, planned as a `AmyLMConfig` field for AmyLM) controlling which FACodec streams participate in fusion: `prosody`, `content`, `acoustic`, `timbre` (each boolean). Modules and forward() build only active streams. Disabled streams are excluded from both module instantiation and the Residual Summation computation, not merely gated at λ=0.
 _Avoid_: Freezing gates, masking tensors at runtime
 
 ### Architecture Comparison
@@ -80,13 +84,40 @@ _Avoid_: Embedding expansion, modality extension
 
 ### Training
 
-**Training Loop**:
-Vanilla PyTorch (no Lightning, no HF Trainer). Single optimizer, single forward/backward per step. Chosen over PyTorch Lightning because (1) no GAN dual-optimizer complexity, (2) avoids Lightning's memory overhead with the 4B Qwen3 backbone, (3) the loop is ~50 lines and easier to debug.
+**Classification Training Loop**:
+Vanilla PyTorch (no Lightning, no HF Trainer). Single optimizer, single forward/backward per step. Used for issue #8 classification probe (`AmyForProsodyClassification`). Chosen over PyTorch Lightning because (1) no GAN dual-optimizer complexity, (2) avoids Lightning's memory overhead with the 4B Qwen3 backbone, (3) the loop is ~50 lines and easier to debug.
 _Avoid_: Trainer, LightningModule
 
+**DPO (Direct Preference Optimization)**:
+Generative training formulation (issue #14). Trains AmyLM to assign higher log-probability to a context-aware "chosen" response than a literal-interpretation "rejected" response, given the same speech input. Uses HF `DPOTrainer` with a frozen reference model. DPO loss: `-log(sigmoid(β * (log_p_chosen - log_p_rejected)))`. Default β=0.1. Trainable parameters: FACodec embedding projector, timbre projection, λ gates. Backbone frozen.
+_Avoid_: contrastive loss, preference loss (ambiguous — use DPO specifically)
+
 **MUStARD Formulation**:
-Binary sarcasm classification. Input: raw audio waveform + FACodec prosody indices (from preprocessing). MOSS-Audio computes mel spectrograms internally. Output: 2-class logits trained with CrossEntropyLoss.
+Binary sarcasm classification (issue #8 probe). Input: raw audio waveform + FACodec prosody indices (from preprocessing). MOSS-Audio computes mel spectrograms internally. Output: 2-class logits trained with CrossEntropyLoss.
 _Avoid_: multi-label, multi-class (binary classification only in the simplest training row)
+
+### Data
+
+**Preference Pair**:
+A DPO training sample: `(audio, chosen_response, rejected_response)` where:
+- `chosen` = context-aware response accounting for prosody, emotion, and speaker identity
+- `rejected` = literal-interpretation response from a bare transcript with no paralinguistic context
+Generated by an external LLM (DeepSeek V4 Flash) via rich vs. stripped prompt templates, then filtered by cosine similarity between the two responses. The speech signal is the sole disambiguation source — AmyLM receives only the audio and a uniform system prompt; no sample-specific text cues.
+_Avoid_: good/bad pair, contrastive sample, ranked pair
+
+**NVTTS**:
+The NonverbalTTS corpus (`deepvk/NonverbalTTS`, 17h, English, Apache 2.0). Rich speech from VoxCeleb + Expresso with word-level inline paralinguistic vocalization annotations (10 NV types expressed as emoji tags in the `Result` column) and 8 emotion categories. Used as the source for preference pair construction. NV tags are mapped from emoji to text labels (`[Laughter]`, `[Breathing]`, etc.) before use in LLM prompts.
+_Avoid_: NonverbalTTS (use NVTTS), NV dataset
+
+**LLM-Generated Preference Pair**:
+Dataset construction strategy: an external LLM generates candidate chosen/rejected responses from a rich paralinguistic prompt vs. a stripped literal prompt. Pairs are embedded and filtered by cosine similarity to retain only pairs where paralinguistic context produced meaningfully different responses. Three-phase pipeline: (1) speaker context enrichment, (2) LLM pair generation, (3) embedding + cosine filter.
+_Avoid_: synthetic data (the audio is real, only the responses are LLM-generated), rule-based negative mining
+
+### Evaluation
+
+**LLM-as-Judge**:
+Evaluation protocol comparing AmyLM's response quality before vs. after DPO training. 50 held-out test samples (lowest cosine similarity — hardest cases). For each sample, the pre-training and post-training models generate responses given `<audio>` + uniform system prompt. An external LLM (DeepSeek V4 Flash) receives both responses plus the ground-truth paralinguistic context and judges which is more emotionally appropriate and speaker-aware. Metric: win rate = post-training wins / non-tie comparisons.
+_Avoid_: human eval (it's LLM-judged, not human-judged), automated metrics
 
 **λ (Lambda)**:
 A family of learnable per-stream scalar gates: λ_p (Prosody), λ_a (Acoustic), λ_c (FACodec Content), λ_t (Timbre). Each initialized at zero. Zero-init guarantees the model equals MOSS-Audio at step 0. Individual gates enable clean ablation — freeze a gate at zero to disable its stream.
@@ -103,6 +134,8 @@ _Avoid_: Ablation grid, experiment table
 ## Relationships
 
 - **Amy LM** uses **MOSS-Audio** as its semantic backbone and **FACodec** for optional Prosody, Content, Acoustic, and Timbre streams
+- **AmyLM** (HF model class) inherits **MossAudioModel**, adding FACodec enrichment modules as permanent architecture
+- **Amy Classifier Head** is the issue #8 classification probe; **AmyLM** is the issue #14 generative model — distinct models with different forward paths
 - **FACodec** substitutes for **Amy Codec** during pilot validation
 - **Semantic Stream**, **Prosody Stream**, **Acoustic Stream**, and **FACodec Content Stream** are fused via **Residual Summation** at 12.5 Hz; each has an independent learnable gate
 - **Stream Activation Config** controls which streams are built and fused; disabled streams are excluded from both module instantiation and forward()
@@ -113,6 +146,9 @@ _Avoid_: Ablation grid, experiment table
 - **Prosody Stream**, **Acoustic Stream**, and **FACodec Content Stream** each pass through **TemporalPool** (80 Hz → MOSS frame rate) after embedding
 - **Projection Architecture** and **Extension Architecture** are competing hypotheses for how to represent speech in LLMs
 - **Social Deafness** is the problem; **Hypothesis Matrix** is the evaluation framework
+- **Preference Pairs** are constructed by an external LLM from **NVTTS** speech, then encoded through the **FACodec** preprocessing pipeline before **DPO** training
+- **DPO** trains **AmyLM** end-to-end within HF `DPOTrainer`, computing per-token log-probabilities of chosen vs. rejected responses on Qwen3's full vocabulary
+- **LLM-as-Judge** evaluates **Social Deafness** improvement by comparing pre/post **DPO** response appropriateness on held-out samples
 
 ## Example dialogue
 
@@ -131,8 +167,15 @@ _Avoid_: Ablation grid, experiment table
 > **Dev:** "Is Timbre Vector the same thing as the old `timbre_codebooks_idx` field?"
 > **Domain expert:** "No. `timbre_codebooks_idx` was a mistake — it stored averaged residual acoustic VQ indices under the wrong name. Timbre Vector is a separate continuous embedding from FACodec's `spk_embs`, utterance-level, float32."
 
+> **Dev:** "Does AmyLM see the emotion label or speaker name during DPO training?"
+> **Domain expert:** "No. The prompt is just a uniform system prompt + `<audio>` placeholder. The model must derive prosody and timbre understanding exclusively from the speech signal. The rich context was only used by the external LLM to *generate* the chosen/rejected pairs — it's not in the training data."
+
+> **Dev:** "What's the difference between AmyForProsodyClassification and AmyLM?"
+> **Domain expert:** "The classifier is a probe — it extracts MOSS-Audio sub-modules, wraps them, mean-pools the output, and classifies. AmyLM is a proper HF model inheriting MossAudioModel directly, replacing the classification head with Qwen3's full generative forward path. Classification was Step 1; AmyLM + DPO is Step 2."
+
 ## Flagged ambiguities
 
 - "Encoder" was used for both the audio encoder (speech → features) and the text encoder (tokens → embeddings), and for the neural audio codec — resolved: use "audio encoder" or "speech encoder" for the former, "LLM backbone" or "token embedder" for the latter, and "Amy Codec" / "FACodec" for the codec.
 - "Injection" blurred the line between DeepStack's mid-layer summation and input-level residual summation — resolved: Residual Summation is the canonical term for the Amy LM approach.
 - "timbre_codebooks_idx" stored averaged residual acoustic VQ indices under the wrong name — resolved: renamed to **Acoustic Stream** (a_t). The true **Timbre Vector** is a separate continuous utterance-level embedding from FACodec `spk_embs`.
+- NVTTS paralinguistic tags are emoji symbols (🌬️, 🤣, 😷) in the `Result` column, not text labels like `[Breathing]` — resolved: NV Tag Emoji Mapping converts emojis to `[Tag]` text labels before use in LLM prompts.

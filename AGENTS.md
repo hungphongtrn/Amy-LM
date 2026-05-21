@@ -58,11 +58,13 @@ Amy-LM/ (branch: exp/amylm-facodec)
 
 - **Do NOT run heavy model tests (4B MOSS-Audio, training loops, full forward/backward) on CPU.** These tests are designed for GPU and will timeout or run for hours. Skip them on CPU-only machines. Accept that tests passing init/lambda/logic checks on CPU are sufficient; full verification happens on GPU.
 - To run only fast tests (no heavy model forward): `uv run python -m pytest tests/ --ignore=tests/training -k "not (train_epoch or evaluate or save_load_roundtrip or training_step)"`
-- Training scripts (`scripts/train_amy.py`) and heavy test suites are GPU-only. Use `nohup` for long-running GPU jobs (see Long-Running Tasks above).
+- Training scripts (`scripts/train_amy_classifier.py`) and heavy test suites are GPU-only. Use `nohup` for long-running GPU jobs (see Long-Running Tasks above).
 
 ## Long-Running Tasks
 
 For long-running tasks (e.g., preprocessing large datasets, training), always use `nohup` and provide the log path to the user. The user will inform when the task is complete for review.
+
+If a command could be a long-running process, **do not run it directly** — it may crash the machine. Instead, prompt the user to run it themselves with both console output (for humans) and log output (for you to debug later). This keeps the machine stable and preserves the logs for post-mortem analysis.
 
 Example:
 ```bash

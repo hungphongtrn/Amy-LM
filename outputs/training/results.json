@@ -1,0 +1,16 @@
+{
+  "mode": "amy",
+  "seed": 42,
+  "epochs": 50,
+  "batch_size": 1,
+  "grad_accum_steps": 8,
+  "effective_batch_size": 8,
+  "lr": 0.0001,
+  "weight_decay": 0.01,
+  "test_metrics": {
+    "val_accuracy": 0.7464788556098938,
+    "val_f1": 0.7567567516837108,
+    "val_loss": 0.5791492730798856
+  },
+  "best_val_accuracy": 0.7101449370384216
+}

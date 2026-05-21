@@ -2,10 +2,10 @@
 
 Usage:
     # Amy model training with W&B
-    python scripts/train_amy.py --data-path data/processed/mustard-processed/train.parquet --mode amy --wandb
+    python scripts/train_amy_classifier.py --data-path data/processed/mustard-processed/train.parquet --mode amy --wandb
 
     # Baseline training
-    python scripts/train_amy.py --data-path data/processed/mustard-processed/train.parquet --mode baseline
+    python scripts/train_amy_classifier.py --data-path data/processed/mustard-processed/train.parquet --mode baseline
 """
 
 import argparse
@@ -47,7 +47,7 @@ def parse_args():
         default="amy",
         help="Model mode: baseline (MOSS-Audio + Linear) or amy (with FACodec streams)",
     )
-    p.add_argument("--epochs", type=int, default=10)
+    p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--batch-size", type=int, default=1)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--weight-decay", type=float, default=0.01)

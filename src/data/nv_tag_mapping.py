@@ -13,13 +13,16 @@ import re
 
 NV_EMOJI_TO_TAG: dict[str, str] = {
     # Emojis observed in NVTTS dataset (deepvk/NonverbalTTS)
+    # Mapping validated by scanning all 3,641 rows of the dataset.
+    # 10 NV types: Breathing, Laughter, Sigh, Sneeze, Cough, Throat clear,
+    #              Groan, Grunt, Snore, Sniff
     "\U0001f32c": "[Breathing]",    # 🌬  WIND BLOWING FACE
     "\U0001f923": "[Laughter]",     # 🤣 ROLLING ON THE FLOOR LAUGHING
-    "\U0001f616": "[Sigh]",         # 😖 CONFOUNDED FACE
-    "\U0001f624": "[Sneeze]",       # 😤 FACE WITH LOOK OF TRIUMPH
+    "\U0001f624": "[Sigh]",         # 😤 FACE WITH LOOK OF TRIUMPH
+    "\U0001f927": "[Sneeze]",       # 🤧 SNEEZING FACE
     "\U0001f637": "[Cough]",        # 😷 FACE WITH MEDICAL MASK
     "\U0001f5e3": "[Throat clear]",# 🗣  SPEAKING HEAD IN SILHOUETTE
-    "\U0001f629": "[Groan]",        # 😩 WEARY FACE
+    "\U0001f616": "[Groan]",        # 😖 CONFOUNDED FACE
     "\U0001f416": "[Grunt]",        # 🐖 PIG
     "\U0001f634": "[Snore]",        # 😴 SLEEPING FACE
     "\U0001f443": "[Sniff]",        # 👃 NOSE
@@ -43,6 +46,22 @@ def _build_emoji_to_tag_extended() -> dict[str, str]:
 _EMOJI_TO_TAG_EXTENDED: dict[str, str] = _build_emoji_to_tag_extended()
 
 
+def strip_nv_emojis(text: str) -> str:
+    """Remove all NV emoji symbols from text, collapsing resulting whitespace.
+
+    Args:
+        text: Text that may contain NV emoji paralinguistic markers.
+
+    Returns:
+        Text with all NV emojis removed and whitespace normalized.
+    """
+    result = text
+    for emoji in sorted(_EMOJI_TO_TAG_EXTENDED, key=len, reverse=True):
+        result = result.replace(emoji, " ")
+    result = re.sub(r"\s+", " ", result).strip()
+    return result
+
+
 def emojis_to_tags(text: str) -> str:
     """Replace NV emoji symbols in text with [Tag] labels.
 
@@ -56,8 +75,8 @@ def emojis_to_tags(text: str) -> str:
         Text with emojis replaced by canonical [Tag] labels.
     """
     result = text
-    for emoji, tag in _EMOJI_TO_TAG_EXTENDED.items():
-        result = result.replace(emoji, f" {tag} ")
+    for emoji in sorted(_EMOJI_TO_TAG_EXTENDED, key=len, reverse=True):
+        result = result.replace(emoji, f" {_EMOJI_TO_TAG_EXTENDED[emoji]} ")
     # Collapse multiple spaces
     result = re.sub(r"\s+", " ", result).strip()
     return result

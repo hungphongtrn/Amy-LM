@@ -17,6 +17,7 @@ import sys
 from typing import Any, Callable, Dict, List, Optional, Set
 
 from openai import AsyncOpenAI
+from tqdm.asyncio import tqdm as async_tqdm
 
 ENRICHED_PATH = "data/nvtts_enriched/nvtts_enriched.parquet"
 OUTPUT_PATH = "data/nvtts_pairs/pairs.jsonl"
@@ -190,36 +191,32 @@ async def run(
     total_pending = len(pending)
     print(f"Processing {total_pending} samples ({len(existing_ids)} already done)", flush=True)
 
-    completed_count = 0
     failed_count = 0
     lock = asyncio.Lock()
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     async def process_and_write(sample):
-        nonlocal completed_count, failed_count
+        nonlocal failed_count
         try:
             pair = await process_single_sample(sample, api_call_fn)
         except Exception as e:
             async with lock:
                 failed_count += 1
-            print(f"  FAILED {sample['id']}: {e}", flush=True)
+            async_tqdm.write(f"  FAILED {sample['id']}: {e}")
             return
 
         with open(output_path, "a") as f:
             json.dump(pair, f)
             f.write("\n")
 
-        async with lock:
-            completed_count += 1
-            if completed_count % 10 == 0 or completed_count == total_pending:
-                print(f"  Progress: {completed_count}/{total_pending} "
-                      f"({failed_count} failed)", flush=True)
+    tasks = [asyncio.create_task(process_and_write(s)) for s in pending]
+    for coro in async_tqdm.as_completed(
+        tasks, desc="Generating pairs", total=total_pending,
+    ):
+        await coro
 
-    tasks = [process_and_write(s) for s in pending]
-    try:
-        await asyncio.gather(*tasks)
-    except asyncio.CancelledError:
-        pass
+    if failed_count:
+        print(f"  {failed_count} samples failed", flush=True)
 
     total = len(dataset)
     completed = load_existing_ids(output_path)

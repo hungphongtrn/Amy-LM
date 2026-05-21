@@ -1,6 +1,6 @@
 """Tests for NV Tag Emoji Mapping -- Issue #17."""
 import pytest
-from src.data.nv_tag_mapping import NV_EMOJI_TO_TAG, NV_TAG_TO_EMOJI, emojis_to_tags
+from src.data.nv_tag_mapping import NV_EMOJI_TO_TAG, NV_TAG_TO_EMOJI, emojis_to_tags, strip_nv_emojis
 
 
 EXPECTED_TAGS = [
@@ -122,3 +122,57 @@ class TestEmojisToTagsTransform:
         for e in emojis[:2]:
             tag = NV_EMOJI_TO_TAG[e]
             assert tag in result
+
+
+class TestStripNVEmojis:
+    def test_single_emoji_stripped(self):
+        e = list(NV_EMOJI_TO_TAG.keys())[0]
+        result = strip_nv_emojis(f"Hello {e} world")
+        assert result == "Hello world"
+
+    def test_multiple_emojis_stripped(self):
+        emojis = list(NV_EMOJI_TO_TAG.keys())
+        if len(emojis) < 2:
+            pytest.skip("Need at least 2 emojis")
+        result = strip_nv_emojis(f"Start {emojis[0]} middle {emojis[1]} end")
+        assert result == "Start middle end"
+
+    def test_no_emojis_unchanged(self):
+        result = strip_nv_emojis("Plain text without any emoji")
+        assert result == "Plain text without any emoji"
+
+    def test_empty_string(self):
+        result = strip_nv_emojis("")
+        assert result == ""
+
+    def test_whitespace_normalization(self):
+        e = list(NV_EMOJI_TO_TAG.keys())[0]
+        result = strip_nv_emojis(f"Word  {e}  word")
+        assert result == "Word word"
+
+    def test_emoji_with_variation_selector(self):
+        e = list(NV_EMOJI_TO_TAG.keys())[0]
+        if "\ufe0f" not in e:
+            e_variant = e + "\ufe0f"
+        else:
+            e_variant = e
+        result = strip_nv_emojis(f"Hi {e_variant} there")
+        assert result == "Hi there"
+
+    def test_consecutive_emojis(self):
+        emojis = list(NV_EMOJI_TO_TAG.keys())
+        if len(emojis) < 2:
+            pytest.skip("Need at least 2 emojis")
+        result = strip_nv_emojis(f"Text {emojis[0]}{emojis[1]} here")
+        assert result == "Text here"
+
+    def test_all_emojis_stripped(self):
+        text = ""
+        for e in NV_EMOJI_TO_TAG:
+            text += f"word {e} "
+        text += "end"
+        result = strip_nv_emojis(text)
+        for e in NV_EMOJI_TO_TAG:
+            assert e not in result
+        assert "word" in result
+        assert "end" in result

@@ -1,22 +1,25 @@
 """Speaker Context Lookup Cache — Issue #18.
 
-Merges 3 VoxCeleb metadata sources plus Expresso speaker data into a
+Merges VoxCeleb metadata sources plus Expresso speaker data into a
 cascading-fallback JSON lookup table for speaker context enrichment.
 
 Sources:
-  1. hechmik/voxceleb_enrichment_age_gender (HF) — richest: name, gender, age, birth_year
-  2. ProgramComputer/voxceleb — vox1_meta.csv (ID -> Name, Gender, Nationality)
-  3. johbac/voxceleb-language-metadata (HF) — VoxCeleb2 names
-  4. Expresso: 4 known speakers (Jack/Lisa/Bert/Emma), North American English
+  1. VoxCeleb enrichment CSV (data/voxceleb_enrichment.csv) — name, gender, nationality, birth_year
+     Downloaded from: https://github.com/hechmik/voxceleb_enrichment_age_gender
+  2. johbac/voxceleb-language-metadata (HF) — VoxCeleb2 names + gender
+  3. Expresso: 4 known speakers (Jack/Lisa/Bert/Emma), North American English
 
-Cascade: enrichment > vox1_meta > language-metadata > Expresso > "unknown"
+Cascade: enrichment CSV > language-metadata > Expresso > "unknown"
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 EXPRESSO_SPEAKERS: dict[str, dict[str, Any]] = {
     "ex01": {"name": "Jack", "gender": "Male", "nationality": "American", "age": None, "birth_year": None},
@@ -74,7 +77,7 @@ class SpeakerCache:
     """Cascading-fallback speaker context lookup.
 
     Merges multiple metadata sources with priority:
-    enrichment > vox1_meta > language-metadata > Expresso > "unknown".
+    enrichment CSV > language-metadata > Expresso > "unknown".
 
     Each field (name, gender, nationality, age, birth_year) is resolved
     independently through the cascade.
@@ -189,7 +192,17 @@ class SpeakerCache:
             )
 
         if not force and os.path.exists(output_path):
-            return cls.load(output_path)
+            cached = cls.load(output_path)
+            # Detect stale cache: only Expresso + mock speakers, no real VoxCeleb data.
+            if len(cached._data) <= len(EXPRESSO_SPEAKERS) + len(_MOCK_VOX1_META):
+                logger.warning(
+                    "Loaded speaker cache has only %d speakers — appears stale/incomplete. "
+                    "Rebuilding to fetch full VoxCeleb metadata.",
+                    len(cached._data),
+                )
+            else:
+                return cached
+            # Fall through to rebuild if stale.
 
         cache = cls()
 
@@ -197,69 +210,176 @@ class SpeakerCache:
         for sid, spk in EXPRESSO_SPEAKERS.items():
             cache._data[sid] = dict(spk)
 
-        # 2. VoxCeleb enrichment (highest priority VoxCeleb source)
-        try:
-            from datasets import load_dataset
+        sources_loaded = 0
 
-            enrich_ds = load_dataset(
-                "hechmik/voxceleb_enrichment_age_gender", split="train"
+        # 2. VoxCeleb enrichment CSV (highest priority — name, gender, nationality, age, birth_year)
+        try:
+            cache._ingest_voxceleb_enrichment_csv()
+            sources_loaded += 1
+        except Exception:
+            logger.warning(
+                "VoxCeleb enrichment CSV (data/voxceleb_enrichment.csv) "
+                "unavailable — download it from "
+                "https://github.com/hechmik/voxceleb_enrichment_age_gender"
             )
-            for row in enrich_ds:
-                sid = row.get("VoxCeleb1 ID") or row.get("voxceleb_id") or row.get("speaker_id")
-                if not sid:
-                    continue
-                speaker = {
-                    "name": row.get("Name") or row.get("name"),
-                    "gender": row.get("Gender") or row.get("gender"),
-                    "nationality": row.get("Nationality") or row.get("nationality"),
-                    "age": row.get("Age") or row.get("age"),
-                    "birth_year": row.get("Birth year") or row.get("birth_year"),
-                }
-                cache._data[sid] = cls._merge_fields(speaker, cache._data.get(sid, {}))
-        except Exception:
-            pass  # Source unavailable, skip
 
-        # 3. VoxCeleb1 meta CSV
+        # 3. VoxCeleb language metadata (names + gender — loaded from raw CSV)
         try:
-            from datasets import load_dataset
-
-            vox1_ds = load_dataset("ProgramComputer/voxceleb", "vox1_meta", split="train")
-            for row in vox1_ds:
-                sid = row.get("VoxCeleb1 ID") or row.get("speaker_id")
-                if not sid:
-                    continue
-                speaker = {
-                    "name": row.get("Name") or row.get("name"),
-                    "gender": row.get("Gender") or row.get("gender"),
-                    "nationality": row.get("Nationality") or row.get("nationality"),
-                }
-                cache._data[sid] = cls._merge_fields(
-                    cache._data.get(sid, {}), speaker
-                )
+            cache._ingest_vox2_language_metadata()
+            sources_loaded += 1
         except Exception:
-            pass
-
-        # 4. VoxCeleb language metadata (names only)
-        try:
-            from datasets import load_dataset
-
-            lang_ds = load_dataset(
-                "johbac/voxceleb-language-metadata", split="train"
+            logger.warning(
+                "VoxCeleb language metadata (johbac/voxceleb-language-metadata) unavailable."
             )
-            for row in lang_ds:
-                sid = row.get("speaker_id") or row.get("VoxCeleb ID")
-                if not sid:
-                    continue
-                speaker = {
-                    "name": row.get("name") or row.get("Name"),
-                }
-                cache._data[sid] = cls._merge_fields(
-                    cache._data.get(sid, {}), speaker
-                )
-        except Exception:
-            pass
+
+        if sources_loaded == 0:
+            logger.warning(
+                "No VoxCeleb metadata sources were loaded — speaker cache will only "
+                "contain %d Expresso speakers. Speaker metadata will be 'unknown' for "
+                "all VoxCeleb IDs.",
+                len(EXPRESSO_SPEAKERS),
+            )
 
         if output_path:
             cache.save(output_path)
 
         return cache
+
+    def _ingest_voxceleb_enrichment_csv(self) -> None:
+        """Ingest VoxCeleb enrichment from local CSV (hechmik's dataset).
+
+        The CSV (data/voxceleb_enrichment.csv) has ~149K rows covering
+        6,112 unique speakers with name, gender, nationality, birth_year.
+        Multiple rows per speaker (one per video) — we aggregate to take
+        the first non-empty value for each field.
+        """
+        import csv
+        from collections import Counter
+        from pathlib import Path
+
+        csv_path = Path("data/voxceleb_enrichment.csv")
+        if not csv_path.exists():
+            raise FileNotFoundError(
+                f"{csv_path} not found. Download from "
+                "https://github.com/hechmik/voxceleb_enrichment_age_gender/"
+                "blob/main/dataset/final_dataframe_extended.csv"
+            )
+
+        # First pass: collect raw values per speaker.
+        raw: dict[str, dict[str, list[str]]] = {}
+        with open(csv_path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                sid = row.get("VoxCeleb_ID", "").strip()
+                if not sid:
+                    continue
+                if sid not in raw:
+                    raw[sid] = {"names": [], "genders": [], "nationalities": [], "birth_years": []}
+                r = raw[sid]
+                name = row.get("Name", "").strip()
+                if name:
+                    r["names"].append(name)
+                gender = row.get("gender", "").strip().lower()
+                if gender:
+                    r["genders"].append(gender)
+                nat = (row.get("nationality_wiki") or row.get("nationality_dbpedia") or row.get("nationality_gkg") or "").strip()
+                if nat:
+                    r["nationalities"].append(nat)
+                by_str = row.get("birth_year", "").strip()
+                if by_str:
+                    r["birth_years"].append(by_str)
+
+        # Merge into cache: first non-empty value wins per field.
+        for sid, fields in raw.items():
+            if sid in _MOCK_VOX1_META:
+                continue
+            speaker: dict[str, Any] = {}
+            # Name: take the most common name
+            if fields["names"]:
+                speaker["name"] = Counter(fields["names"]).most_common(1)[0][0]
+            # Gender: take majority vote
+            if fields["genders"]:
+                g = Counter(fields["genders"]).most_common(1)[0][0]
+                speaker["gender"] = g.capitalize() if g in ("male", "female") else g
+            # Nationality: take first (most entries agree)
+            if fields["nationalities"]:
+                speaker["nationality"] = fields["nationalities"][0]
+            # Birth year: take first valid integer
+            for by_str in fields["birth_years"]:
+                try:
+                    by = int(float(by_str))
+                    speaker["birth_year"] = by
+                    break
+                except (ValueError, TypeError):
+                    pass
+
+            if sid in self._data:
+                self._data[sid] = self._merge_fields(speaker, self._data[sid])
+            else:
+                self._data[sid] = self._merge_fields(speaker)
+
+    def _ingest_vox2_language_metadata(self) -> None:
+        """Ingest VoxCeleb2 metadata from johbac/voxceleb-language-metadata CSV.
+
+        The dataset CSV is tab-separated but has a malformed header (all column
+        names fused into one). We load it directly via HF cache to handle this.
+        """
+        import csv
+        from pathlib import Path
+
+        from datasets import load_dataset
+
+        # Download the dataset to populate the cache directory.
+        try:
+            load_dataset("johbac/voxceleb-language-metadata", split="train")
+        except Exception:
+            pass
+
+        # Locate the cached CSV file.
+        cache_root = Path.home() / ".cache" / "huggingface" / "hub"
+        csv_files = list(cache_root.glob(
+            "datasets--johbac--voxceleb-language-metadata/**/vox2_meta.csv"
+        ))
+        if not csv_files:
+            raise FileNotFoundError("vox2_meta.csv not found in HuggingFace cache")
+
+        csv_path = csv_files[0]
+
+        with open(csv_path, encoding="utf-8") as f:
+            reader = csv.reader(f, delimiter="\t")
+            header = next(reader)
+            header = [h.strip() for h in header]
+
+            col_idx = {h: i for i, h in enumerate(header)}
+            name_idx = col_idx.get("Name")
+            gender_idx = col_idx.get("Gender")
+            vc_id_idx = col_idx.get("VoxCeleb2 ID")
+
+            if name_idx is None or vc_id_idx is None:
+                raise ValueError(
+                    f"CSV columns not as expected: {header}. "
+                    f"Expected 'Name' and 'VoxCeleb2 ID' columns."
+                )
+
+            for row in reader:
+                if not row or len(row) < max(name_idx, vc_id_idx, (gender_idx or 0)) + 1:
+                    continue
+                sid = row[vc_id_idx].strip()
+                if not sid or sid in _MOCK_VOX1_META:
+                    continue
+                raw_name = row[name_idx].strip().replace("_", " ")
+                speaker: dict[str, Any] = {
+                    "name": raw_name,
+                }
+                if gender_idx is not None and gender_idx < len(row):
+                    g = row[gender_idx].strip().lower()
+                    if g in ("m", "male"):
+                        speaker["gender"] = "Male"
+                    elif g in ("f", "female"):
+                        speaker["gender"] = "Female"
+                if sid in self._data:
+                    self._data[sid] = self._merge_fields(
+                        self._data.get(sid, {}), speaker
+                    )
+                else:
+                    self._data[sid] = self._merge_fields(speaker)

@@ -130,6 +130,11 @@ class AmyTrainer:
         all_labels = torch.cat(all_labels)
         metrics = self._compute_metrics(all_preds, all_labels, prefix="val")
         metrics["val_loss"] = total_loss / n_batches
+
+        if self.log_wandb:
+            import wandb
+            wandb.log({**metrics, **self._get_lambdas(), "epoch": self.current_epoch})
+
         return metrics
 
     def _compute_metrics(
