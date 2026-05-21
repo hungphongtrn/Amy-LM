@@ -1,6 +1,6 @@
 .env
 
-data/
+/data/
 .venv/
 *.log
 
@@ -10,10 +10,9 @@ __pycache__/
 wandb/
 checkpoints/
 audio_samples/
-!/src/data/
+/data/
 .data/
 .DS_STORE
 *.egg-info/
 vendor/
 .agents/
-outputs/
