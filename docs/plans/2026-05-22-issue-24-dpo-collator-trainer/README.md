@@ -4,9 +4,8 @@
 > For agentic workers: Use subagent-driven-development. Start with the current phase — don't read ahead.
 
 ## Quick Status
-- **Current Phase:** Phase 1 — Dependencies + DPOCollator
-- **Next Up:** Phase 2 — AmyDPOTrainer (pending Phase 1 completion)
-- **Overall Progress:** 0/4 phases complete
+- **Overall Progress:** 3/4 phases complete (Phase 4 requires GPU)
+- **Test Suite:** 12/12 passing (CPU-only)
 
 ## Start Here
 1. [strategy.md](./strategy.md) — Understand the big picture (5 min)
@@ -19,10 +18,10 @@
 
 | Phase | Status | Outcome | Document |
 |-------|--------|---------|----------|
-| 1 — Collator | 🔲 Not Started | DPOCollator + unit tests | [phase-01-*.md](./phase-01-dependencies-and-collator.md) |
-| 2 — Trainer | 🔲 Pending | AmyDPOTrainer + unit tests | [phase-02-*.md](./phase-02-amy-dpo-trainer.md) |
-| 3 — Script | 🔲 Pending | train_amy_dpo.py | [phase-03-*.md](./phase-03-training-script.md) |
-| 4 — Integration | 🔲 Pending | Single-step gradient test | [phase-04-*.md](./phase-04-integration-test.md) |
+| 1 — Collator | ✅ Complete | DPOCollator + 9 tests | [phase-01-*.md](./phase-01-dependencies-and-collator.md) |
+| 2 — Trainer | ✅ Complete | AmyDPOTrainer + 3 tests | [phase-02-*.md](./phase-02-amy-dpo-trainer.md) |
+| 3 — Script | ✅ Complete | train_amy_dpo.py | [phase-03-*.md](./phase-03-training-script.md) |
+| 4 — Integration | ⏭️ Skipped | GPU-only | [phase-04-*.md](./phase-04-integration-test.md) |
 
 ## Key Decisions
 See [decisions.md](./decisions.md) for rationale on:
