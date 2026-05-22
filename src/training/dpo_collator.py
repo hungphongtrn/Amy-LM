@@ -37,6 +37,19 @@ class DPOCollator:
         pad_to_multiple_of: int | None = None,
     ) -> None:
         self.processor = processor
+        required_attrs = [
+            "_base_tokenizer",
+            "_AUDIO_SPAN_RE",
+            "_extract_mel",
+            "_conv3_downsample_len",
+            "_build_audio_placeholder_ids",
+        ]
+        missing = [a for a in required_attrs if not hasattr(self.processor, a)]
+        if missing:
+            raise AttributeError(
+                f"MossAudioProcessor is missing required attributes: {missing}. "
+                "The processor interface may have changed."
+            )
         self.tokenizer = processor._base_tokenizer
         if getattr(self.tokenizer, "pad_token_id", None) is None:
             self.tokenizer.pad_token_id = pad_token_id
@@ -44,7 +57,7 @@ class DPOCollator:
         self.max_length = max_length
         self.pad_to_multiple_of = pad_to_multiple_of
 
-    def _extract_audio(self, audio_input: Any) -> tuple[torch.Tensor, int]:
+    def _extract_audio(self, audio_input: Any) -> torch.Tensor:
         if isinstance(audio_input, dict):
             waveform = audio_input["array"]
             sample_rate = int(audio_input.get("sampling_rate", 16000))
@@ -57,8 +70,11 @@ class DPOCollator:
         else:
             raise TypeError(f"Unsupported audio format: {type(audio_input)!r}")
 
+        if sample_rate != 16000:
+            raise ValueError(f"Expected 16kHz audio, got {sample_rate}Hz")
+
         waveform_tensor = torch.as_tensor(waveform, dtype=torch.float32).flatten()
-        return waveform_tensor, sample_rate
+        return waveform_tensor
 
     def _extract_mel_batch(self, waveforms: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         mels = [self.processor._extract_mel(waveform) for waveform in waveforms]
@@ -69,9 +85,8 @@ class DPOCollator:
             audio_data[i, :, : mel.shape[-1]] = mel.to(torch.float32)
         return audio_data, seqlens
 
-    def _tokenize_sample(self, audio: torch.Tensor, response_text: str) -> dict[str, Any]:
-        mel = self.processor._extract_mel(audio)
-        num_audio_frames = self.processor._conv3_downsample_len(mel.shape[-1])
+    def _tokenize_sample(self, num_audio_frames: int, response_text: str) -> dict[str, Any]:
+        num_audio_frames = self.processor._conv3_downsample_len(num_audio_frames)
         audio_placeholder_ids = self.processor._build_audio_placeholder_ids(num_audio_frames)
 
         span = self.processor._AUDIO_SPAN_RE.search(self.SYSTEM_PROMPT)
@@ -95,14 +110,18 @@ class DPOCollator:
         }
 
     def __call__(self, examples: list[dict[str, Any]]) -> dict[str, Any]:
-        waveforms = [self._extract_audio(example["audio"])[0] for example in examples]
+        if not examples:
+            raise ValueError("DPOCollator requires at least one example")
+
+        waveforms = [self._extract_audio(example["audio"]) for example in examples]
         audio_data, audio_data_seqlens = self._extract_mel_batch(waveforms)
+        mel_lengths = [int(length.item()) for length in audio_data_seqlens]
 
         prosody_sequences = [
             torch.as_tensor(example["prosody_codebooks_idx"], dtype=torch.long).flatten()
             for example in examples
         ]
-        max_prosody_len = max(seq.shape[0] for seq in prosody_sequences)
+        max_prosody_len = max((seq.shape[0] for seq in prosody_sequences), default=0)
         prosody_indices = torch.zeros((len(examples), 1, max_prosody_len), dtype=torch.long)
         for i, seq in enumerate(prosody_sequences):
             prosody_indices[i, 0, : seq.shape[0]] = seq
@@ -112,14 +131,14 @@ class DPOCollator:
             dim=0,
         )
 
-        chosen_data = [self._tokenize_sample(waveforms[i], examples[i]["chosen"]) for i in range(len(examples))]
+        chosen_data = [self._tokenize_sample(mel_lengths[i], examples[i]["chosen"]) for i in range(len(examples))]
         rejected_data = [
-            self._tokenize_sample(waveforms[i], examples[i]["rejected"]) for i in range(len(examples))
+            self._tokenize_sample(mel_lengths[i], examples[i]["rejected"]) for i in range(len(examples))
         ]
 
         chosen_lengths = [min(len(item["input_ids"]), self.max_length) for item in chosen_data]
         rejected_lengths = [min(len(item["input_ids"]), self.max_length) for item in rejected_data]
-        max_len = max(chosen_lengths + rejected_lengths)
+        max_len = max(chosen_lengths + rejected_lengths, default=0)
         if self.pad_to_multiple_of is not None and max_len % self.pad_to_multiple_of != 0:
             max_len = ((max_len // self.pad_to_multiple_of) + 1) * self.pad_to_multiple_of
 

@@ -74,7 +74,9 @@ def test_completion_mask_structure():
     collator = DPOCollator(_MockProcessor(), pad_token_id=0)
     examples = [_make_example()]
     batch = collator(examples)
-    chosen_meta = collator._tokenize_sample(collator._extract_audio(examples[0]["audio"])[0], examples[0]["chosen"])
+    waveform = collator._extract_audio(examples[0]["audio"])
+    mel_len = collator._extract_mel_batch([waveform])[1][0].item()
+    chosen_meta = collator._tokenize_sample(mel_len, examples[0]["chosen"])
     prompt_len = min(chosen_meta["prompt_len"], batch["completion_mask"].shape[1])
     mask = batch["completion_mask"][0]
     assert torch.all(mask[:prompt_len] == 0)
@@ -104,3 +106,29 @@ def test_batch_size_1():
     batch = collator([_make_example()])
     assert batch["input_ids"].shape[0] == 2
     assert batch["audio_data"].shape[0] == 2
+
+
+def test_empty_batch_raises():
+    collator = DPOCollator(_MockProcessor(), pad_token_id=0)
+    try:
+        collator([])
+        assert False, "Expected ValueError for empty batch"
+    except ValueError as exc:
+        assert "requires at least one example" in str(exc)
+
+
+def test_missing_key_raises():
+    collator = DPOCollator(_MockProcessor(), pad_token_id=0)
+    example = _make_example()
+    del example["chosen"]
+    try:
+        collator([example])
+        assert False, "Expected KeyError for missing chosen key"
+    except KeyError as exc:
+        assert exc.args[0] == "chosen"
+
+
+def test_truncation_respects_max_length():
+    collator = DPOCollator(_MockProcessor(), pad_token_id=0, max_length=10)
+    batch = collator([_make_example(audio_len=64000)])
+    assert batch["input_ids"].shape[1] <= 10
