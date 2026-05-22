@@ -19,6 +19,11 @@ dependencies = [
     "accelerate>=1.12.0",
     "openai>=2.37.0",
     "python-dotenv>=1.0.0",
+    "sentence-transformers>=5.5.1",
+    "hf-cli>=0.1",
+    "trl>=0.10.0",
+    "peft>=0.13.0",
+    "einops>=0.8.0",
 ]
 
 [project.optional-dependencies]
