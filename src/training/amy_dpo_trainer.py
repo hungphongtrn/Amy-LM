@@ -30,18 +30,6 @@ class AmyDPOTrainer(DPOTrainer):
             args = DPOConfig(
                 output_dir="./amy_dpo_output",
                 precompute_ref_log_probs=True,
-                beta=0.1,
-                bf16=True,
-                gradient_checkpointing=True,
-                gradient_checkpointing_kwargs={"use_reentrant": False},
-                per_device_train_batch_size=1,
-                per_device_eval_batch_size=1,
-                gradient_accumulation_steps=4,
-                max_length=1024,
-                logging_steps=10,
-                save_steps=500,
-                eval_steps=500,
-                num_train_epochs=3,
                 loss_type=["sigmoid"],
             )
         elif not args.precompute_ref_log_probs:
@@ -67,10 +55,9 @@ class AmyDPOTrainer(DPOTrainer):
         try:
             model = self.accelerator.unwrap_model(self.model)
             base_model = getattr(model, "base_model", model)
-            if hasattr(base_model, "residual_fusion"):
-                fusion = base_model.residual_fusion
-                logs["lambda_p"] = float(fusion.lambda_p.item())
-                logs["lambda_t"] = float(fusion.lambda_t.item())
-        except Exception:
+            fusion = base_model.residual_fusion
+            logs["lambda_p"] = float(fusion.lambda_p.item())
+            logs["lambda_t"] = float(fusion.lambda_t.item())
+        except AttributeError:
             pass
         super().log(logs, *args, **kwargs)
