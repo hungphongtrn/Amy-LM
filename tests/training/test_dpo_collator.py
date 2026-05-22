@@ -65,6 +65,7 @@ def test_audio_fields_duplicated_identically():
     batch = collator([_make_example(), _make_example(audio_len=12000, prosody_len=64)])
     b = 2
     assert torch.equal(batch["audio_data"][:b], batch["audio_data"][b:])
+    assert torch.equal(batch["audio_data_seqlens"][:b], batch["audio_data_seqlens"][b:])
     assert torch.equal(batch["prosody_indices"][:b], batch["prosody_indices"][b:])
     assert torch.equal(batch["timbre_vector"][:b], batch["timbre_vector"][b:])
 
