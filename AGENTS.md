@@ -20,6 +20,7 @@ This is **Amy-LM**, a research project developing "The Semantic Bridge" - a dise
 
 1. **Read CONTEXT.md** to understand domain terminology
 2. Check relevant docs in `docs/` for historical context
+3. **Grill first, implement later.** For issues involving domain decisions (schema, data flow, architecture), use `grill-with-docs` to resolve terminology and design choices before touching code. Update CONTEXT.md, AGENTS.md, and the GitHub issue with decisions as they crystallize. Only begin implementation after the grilling session is complete and the plan is committed.
 
 ## Project Structure
 

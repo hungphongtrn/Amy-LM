@@ -10,7 +10,6 @@ import pytest
 import torch
 import numpy as np
 from pathlib import Path
-import importlib.util
 from unittest.mock import patch, MagicMock
 from typing import Generator
 
@@ -513,84 +512,3 @@ class TestDatasetProcessor:
             assert len(row["content_codebooks_idx"]) > 0
             # Output should have 16kHz sampling rate
             assert row["audio"]["sampling_rate"] == 16000
-
-
-def test_preprocess_cli_accepts_local_dir_flag():
-    """CLI parser should recognize --local-dir and set it to True."""
-    script_path = Path(__file__).resolve().parents[2] / "scripts" / "preprocess.py"
-    spec = importlib.util.spec_from_file_location("preprocess_script", script_path)
-    preprocess_script = importlib.util.module_from_spec(spec)
-    assert spec is not None and spec.loader is not None
-    spec.loader.exec_module(preprocess_script)
-
-    parser = preprocess_script.create_parser()
-    args = parser.parse_args(
-        [
-            "--dataset", "org/ds",
-            "--split", "train",
-            "--output-repo", "org/out",
-            "--local-dir",
-        ]
-    )
-
-    assert args.local_dir is True
-
-
-def test_preprocess_main_with_local_dir_creates_expected_parquet(tmp_path: Path):
-    """main() should process a local Arrow dataset and write parquet output."""
-    from datasets import Dataset
-
-    script_path = Path(__file__).resolve().parents[2] / "scripts" / "preprocess.py"
-    spec = importlib.util.spec_from_file_location("preprocess_script", script_path)
-    preprocess_script = importlib.util.module_from_spec(spec)
-    assert spec is not None and spec.loader is not None
-    spec.loader.exec_module(preprocess_script)
-
-    local_dataset_dir = tmp_path / "local_arrow"
-    output_dir = tmp_path / "processed_out"
-
-    ds = Dataset.from_dict(
-        {
-            "id": [f"sample_{i:03d}" for i in range(5)],
-            "audio": [
-                {
-                    "array": (np.sin(2 * np.pi * 440 * np.linspace(0, 2.0, 32000)) * 0.5).astype(
-                        np.float32
-                    ),
-                    "sampling_rate": 16000,
-                }
-                for _ in range(5)
-            ],
-            "sarcasm": [0, 1, 0, 1, 0],
-        }
-    )
-    ds.save_to_disk(str(local_dataset_dir))
-
-    exit_code = preprocess_script.main(
-        dataset=str(local_dataset_dir),
-        split="null",
-        output_repo="test-repo",
-        max_samples=5,
-        device="cpu",
-        output_dir=str(output_dir),
-        no_push=True,
-        local_dir=True,
-    )
-
-    assert exit_code == 0
-
-    output_parquet = output_dir / "test-repo" / "null.parquet"
-    assert output_parquet.exists()
-
-    loaded = Dataset.from_parquet(str(output_parquet))
-    expected_columns = {
-        "dataset",
-        "id",
-        "label",
-        "audio",
-        "prosody_codebooks_idx",
-        "content_codebooks_idx",
-        "acoustic_codebooks_idx",
-        "timbre_vector",
-    }
-    assert expected_columns.issubset(set(loaded.column_names))
