@@ -1,0 +1,39 @@
+# Minimal debug config — verify pipeline without waiting for full training.
+# Use for: smoke testing, gradient flow checks, profile validation.
+
+model: OpenMOSS-Team/MOSS-Audio-4B-Thinking
+dataset: hungphongtrn/nvtts_facodec
+cosine_threshold: 0.85
+
+# ── QLoRA (minimal for debug) ───────────────────────────────────────────────
+lora_r: 4                                # Minimal rank for fast init
+lora_alpha: 8                            # 2× r
+lora_dropout: 0.0                        # No dropout for deterministic debug
+
+# ── DPO ─────────────────────────────────────────────────────────────────────
+beta: 0.5                                # Higher beta → weaker preference signal; stable for debug
+
+# ── Optimization ────────────────────────────────────────────────────────────
+learning_rate: 1.0e-4                    # Higher LR for faster convergence in debug
+warmup_ratio: 0.0                        # No warmup
+max_length: 512                          # Short sequences for speed
+per_device_batch_size: 1
+gradient_accumulation_steps: 1           # No accumulation — step every batch
+num_epochs: 0.01                         # ~36 steps  (fractional epochs supported)
+max_grad_norm: 10.0                      # Loose clipping — want to see raw gradients
+
+# ── Logging ─────────────────────────────────────────────────────────────────
+output_dir: ./output/amy_dpo_debug
+logging_steps: 1                          # Log every step
+save_steps: 50                            # Save checkpoint (unlikely to trigger)
+eval_steps: 50                            # Eval (unlikely to trigger)
+save_total_limit: 1
+wandb_project: amy-lm-dpo-debug
+wandb_run_name: smoke_test
+no_wandb: true                            # Skip W&B for debug runs
+
+seed: 42
+
+# ── Debug ────────────────────────────────────────────────────────────────────
+num_samples: 2
+gradient_checkpointing: false

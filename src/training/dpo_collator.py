@@ -67,6 +67,10 @@ class DPOCollator:
         elif torch.is_tensor(audio_input):
             waveform = audio_input
             sample_rate = 16000
+        elif hasattr(audio_input, "get_all_samples"):
+            samples = audio_input.get_all_samples()
+            waveform = samples.data
+            sample_rate = getattr(audio_input.metadata, "sample_rate", 16000)
         else:
             raise TypeError(f"Unsupported audio format: {type(audio_input)!r}")
 
@@ -100,7 +104,8 @@ class DPOCollator:
         prompt_ids = prefix_ids + [self.AUDIO_BOS_ID] + audio_placeholder_ids + [self.AUDIO_EOS_ID] + suffix_ids
 
         response_ids = self.tokenizer.encode(response_text, add_special_tokens=False)
-        response_ids = response_ids + [self.tokenizer.eos_token_id]
+        if not response_ids or response_ids[-1] != self.tokenizer.eos_token_id:
+            response_ids = response_ids + [self.tokenizer.eos_token_id]
         full_ids = prompt_ids + response_ids
         audio_input_mask_positions = [token_id == self.AUDIO_TOKEN_ID for token_id in full_ids]
         return {
@@ -170,6 +175,13 @@ class DPOCollator:
         completion_mask = torch.cat([chosen_completion, rejected_completion], dim=0)
         audio_input_mask = torch.cat([chosen_audio_mask, rejected_audio_mask], dim=0)
 
+        ref_chosen_logps = torch.tensor(
+            [example.get("ref_chosen_logps", 0.0) for example in examples], dtype=torch.float32
+        )
+        ref_rejected_logps = torch.tensor(
+            [example.get("ref_rejected_logps", 0.0) for example in examples], dtype=torch.float32
+        )
+
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
@@ -179,4 +191,6 @@ class DPOCollator:
             "audio_input_mask": audio_input_mask,
             "prosody_indices": torch.cat([prosody_indices, prosody_indices], dim=0),
             "timbre_vector": torch.cat([timbre_vector, timbre_vector], dim=0),
+            "ref_chosen_logps": ref_chosen_logps,
+            "ref_rejected_logps": ref_rejected_logps,
         }

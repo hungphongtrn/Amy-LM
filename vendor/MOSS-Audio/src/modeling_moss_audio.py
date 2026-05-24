@@ -462,6 +462,8 @@ class MossAudioModel(MossAudioPreTrainedModel, GenerationMixin):
             inputs_embeds = self.get_input_embeddings()(input_ids)
 
         hook_handles = []
+        _saved_gc_states: dict[int, bool] = {}
+        _llm_layers = getattr(self.language_model, "layers", None)
         if audio_data is not None:
             if audio_input_mask is None:
                 raise ValueError("audio_input_mask is required when audio_data is provided.")
@@ -491,6 +493,16 @@ class MossAudioModel(MossAudioPreTrainedModel, GenerationMixin):
                         )
                     deepstack_audio_embeds.append(ds)
 
+                # Disable gradient checkpointing on deepstack-hooked LLM layers
+                # to avoid CheckpointError from GradientCheckpointingLayer.__call__
+                # wrapping nn.Module.__call__ (incl. hooks) inside checkpoint.
+                if _llm_layers is not None:
+                    num_ds = len(deepstack_audio_embeds)
+                    for i in range(min(num_ds, len(_llm_layers))):
+                        layer = _llm_layers[i]
+                        _saved_gc_states[i] = layer.gradient_checkpointing
+                        layer.gradient_checkpointing = False
+
                 try:
                     hook_handles = self._register_llm_deepstack_hooks(audio_input_mask, deepstack_audio_embeds)
                 except Exception:
@@ -515,6 +527,10 @@ class MossAudioModel(MossAudioPreTrainedModel, GenerationMixin):
         finally:
             for h in hook_handles:
                 h.remove()
+            if _llm_layers is not None:
+                for i, saved in _saved_gc_states.items():
+                    if i < len(_llm_layers):
+                        _llm_layers[i].gradient_checkpointing = saved
 
         hidden_states = outputs[0]
         logits = self.lm_head(hidden_states)

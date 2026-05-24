@@ -7,7 +7,6 @@ import sys
 
 import torch
 import torch.nn as nn
-from transformers import BitsAndBytesConfig
 
 
 _VENDOR_MOSS_AUDIO_PATH = os.path.abspath(
@@ -43,18 +42,10 @@ class MossAudioWrapper(nn.Module):
         self.model_id = model_id
         self.device = torch.device(device)
 
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
-        )
-
         self.model = MossAudioModel.from_pretrained(
             model_id,
             trust_remote_code=True,
-            dtype="auto",
-            quantization_config=bnb_config,
-            device_map={"": 0},
+            torch_dtype=torch.float32,
         )
         self.model.eval()
         self.processor = MossAudioProcessor.from_pretrained(

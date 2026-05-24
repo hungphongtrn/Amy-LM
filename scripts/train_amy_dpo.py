@@ -1,16 +1,30 @@
 #!/usr/bin/env python3
-"""AmyLM DPO training script."""
+"""AmyLM DPO training script.
+
+Usage:
+    # Use a YAML config file (recommended):
+    python scripts/train_amy_dpo.py --config configs/dpo/rtx3060_12gb.yaml
+
+    # Override specific values from CLI (highest priority):
+    python scripts/train_amy_dpo.py --config configs/dpo/rtx3060_12gb.yaml --beta 0.2 --lora-r 8
+
+    # No config file (uses dataclass defaults):
+    python scripts/train_amy_dpo.py --learning-rate 1e-5 --num-epochs 5
+
+    # Debug smoke test:
+    python scripts/train_amy_dpo.py --config configs/dpo/debug.yaml
+"""
 
 from __future__ import annotations
 
 import argparse
 import os
 import sys
+from typing import Any
 
 import torch
 from datasets import load_dataset
 from peft import LoraConfig, TaskType, get_peft_model
-from transformers import BitsAndBytesConfig
 from trl import DPOConfig
 
 # Add src path
@@ -27,71 +41,88 @@ if _VENDOR_SRC not in sys.path:
 
 from processing_moss_audio import MossAudioProcessor
 from models.amy_lm import AmyLM, AmyLMConfig
-from training.dpo_collator import DPOCollator
 from training.amy_dpo_trainer import AmyDPOTrainer
+from training.config import DPOTrainingConfig, register_config_arg, resolve_config
+from training.dpo_collator import DPOCollator
 
 
-def parse_args():
+def parse_config(raw_args: list[str] | None = None) -> DPOTrainingConfig:
+    """Build argparse, inject YAML defaults, parse CLI → resolved config.
+
+    Priority: CLI flags > YAML file > dataclass defaults.
+    """
     parser = argparse.ArgumentParser(description="AmyLM DPO Training")
+
+    # --config flag (handled first to load YAML before full parse)
+    register_config_arg(parser)
 
     # Model
     parser.add_argument(
         "--model",
-        default="OpenMOSS-Team/MOSS-Audio-4B-Thinking",
+        default=DPOTrainingConfig.model,
         help="Pretrained MOSS-Audio model ID or path",
     )
 
     # Dataset
     parser.add_argument(
         "--dataset",
-        default="hungphongtrn/nvtts_facodec",
+        default=DPOTrainingConfig.dataset,
         help="HuggingFace dataset ID",
     )
     parser.add_argument(
         "--cosine-threshold",
         type=float,
-        default=0.85,
+        default=DPOTrainingConfig.cosine_threshold,
         help="Filter samples with cosine_similarity < threshold",
     )
 
     # QLoRA
-    parser.add_argument("--lora-r", type=int, default=8, help="LoRA rank")
-    parser.add_argument("--lora-alpha", type=int, default=16, help="LoRA alpha")
-    parser.add_argument("--lora-dropout", type=float, default=0.05, help="LoRA dropout")
+    parser.add_argument("--lora-r", type=int, default=DPOTrainingConfig.lora_r, help="LoRA rank")
+    parser.add_argument("--lora-alpha", type=int, default=DPOTrainingConfig.lora_alpha, help="LoRA alpha")
+    parser.add_argument("--lora-dropout", type=float, default=DPOTrainingConfig.lora_dropout, help="LoRA dropout")
 
     # Training
-    parser.add_argument("--beta", type=float, default=0.1, help="DPO beta")
-    parser.add_argument("--learning-rate", type=float, default=5e-5, help="Learning rate")
-    parser.add_argument("--warmup-ratio", type=float, default=0.1, help="Warmup ratio")
-    parser.add_argument("--num-epochs", type=float, default=3.0, help="Training epochs")
-    parser.add_argument("--per-device-batch-size", type=int, default=1)
-    parser.add_argument("--gradient-accumulation-steps", type=int, default=4)
+    parser.add_argument("--beta", type=float, default=DPOTrainingConfig.beta, help="DPO beta")
+    parser.add_argument("--learning-rate", type=float, default=DPOTrainingConfig.learning_rate, help="Learning rate")
+    parser.add_argument("--warmup-ratio", type=float, default=DPOTrainingConfig.warmup_ratio, help="Warmup ratio")
+    parser.add_argument("--num-epochs", type=float, default=DPOTrainingConfig.num_epochs, help="Training epochs")
+    parser.add_argument("--per-device-batch-size", type=int, default=DPOTrainingConfig.per_device_batch_size)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=DPOTrainingConfig.gradient_accumulation_steps)
     parser.add_argument(
-        "--max-length", type=int, default=1024, help="Max sequence length"
+        "--max-length", type=int, default=DPOTrainingConfig.max_length, help="Max sequence length"
     )
-    parser.add_argument("--max-grad-norm", type=float, default=1.0)
+    parser.add_argument("--max-grad-norm", type=float, default=DPOTrainingConfig.max_grad_norm)
 
     # Logging & checkpointing
-    parser.add_argument("--output-dir", default="./output/amy_dpo", help="Output directory")
-    parser.add_argument("--logging-steps", type=int, default=10)
-    parser.add_argument("--save-steps", type=int, default=500)
-    parser.add_argument("--eval-steps", type=int, default=500)
-    parser.add_argument("--wandb-project", default="amy-lm-dpo", help="W&B project")
-    parser.add_argument("--wandb-run-name", default=None, help="W&B run name")
-    parser.add_argument("--no-wandb", action="store_true", help="Disable W&B")
+    parser.add_argument("--output-dir", default=DPOTrainingConfig.output_dir, help="Output directory")
+    parser.add_argument("--logging-steps", type=int, default=DPOTrainingConfig.logging_steps)
+    parser.add_argument("--save-steps", type=int, default=DPOTrainingConfig.save_steps)
+    parser.add_argument("--eval-steps", type=int, default=DPOTrainingConfig.eval_steps)
+    parser.add_argument("--wandb-project", default=DPOTrainingConfig.wandb_project, help="W&B project")
+    parser.add_argument("--wandb-run-name", default=DPOTrainingConfig.wandb_run_name, help="W&B run name")
+    parser.add_argument("--no-wandb", action="store_true", default=DPOTrainingConfig.no_wandb, help="Disable W&B")
 
     # Misc
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=DPOTrainingConfig.seed)
+    parser.add_argument("--no-grad-checkpoint", action="store_false",
+                        dest="gradient_checkpointing",
+                        default=DPOTrainingConfig.gradient_checkpointing,
+                        help="Disable gradient checkpointing (for debug)")
+    parser.add_argument("--num-samples", type=int, default=DPOTrainingConfig.num_samples,
+                        help="Limit dataset to first N samples (for debug)")
 
-    return parser.parse_args()
+    return resolve_config(parser, raw_args)
 
 
-def load_and_filter_dataset(dataset_id: str, cosine_threshold: float):
+def load_and_filter_dataset(dataset_id: str, cosine_threshold: float, num_samples: int | None = None):
     """Load NVTTS-FACodec dataset and filter by cosine similarity."""
     ds = load_dataset(dataset_id, split="train")
     ds = ds.filter(lambda x: x["cosine_similarity"] < cosine_threshold)
     total = len(ds)
     print(f"After cosine < {cosine_threshold}: {total} samples")
+
+    if num_samples is not None:
+        total = min(num_samples, total)
 
     # NVTTS split indices: train=0-3640, dev=3641-3686
     train_ds = ds.select(range(min(3641, total)))
@@ -99,29 +130,36 @@ def load_and_filter_dataset(dataset_id: str, cosine_threshold: float):
     dev_end = min(dev_start + 46, total)
     dev_ds = ds.select(range(dev_start, dev_end)) if dev_end > dev_start else None
 
+    # Add a 'prompt' column so TRL's _prepare_dataset skips extract_prompt.
+    # Without this, extract_prompt finds the longest common prefix between
+    # 'chosen' and 'rejected' text strings and truncates both, corrupting the
+    # responses seen by DPOCollator. The actual prompt (system text + audio
+    # placeholders) is constructed dynamically in DPOCollator._tokenize_sample.
+    def _add_prompt(example):
+        example["prompt"] = ""
+        return example
+
+    train_ds = train_ds.map(_add_prompt)
+    if dev_ds is not None:
+        dev_ds = dev_ds.map(_add_prompt)
+
     print(f"Train: {len(train_ds)}, Dev: {len(dev_ds) if dev_ds else 0}")
     return train_ds, dev_ds
 
 
-def init_model(args):
-    """Initialize AmyLM with 4-bit quantization + QLoRA."""
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-    )
-
-    amy_config = AmyLMConfig.from_pretrained(args.model, trust_remote_code=True)
+def init_model(config: DPOTrainingConfig):
+    """Initialize AmyLM."""
+    amy_config = AmyLMConfig.from_pretrained(config.model, trust_remote_code=True)
     amy_config.freeze_audio_encoder = True
     amy_config.freeze_audio_adapter = True
     amy_config.freeze_llm = True
 
     model = AmyLM.from_pretrained(
-        args.model,
+        config.model,
         config=amy_config,
         trust_remote_code=True,
-        quantization_config=bnb_config,
-        device_map="auto",
+        torch_dtype=torch.bfloat16,
+        low_cpu_mem_usage=True,
     )
 
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -129,9 +167,9 @@ def init_model(args):
     print(f"Pre-LoRA trainable: {trainable:,}/{total:,} ({100 * trainable / total:.1f}%)")
 
     lora_config = LoraConfig(
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
+        r=config.lora_r,
+        lora_alpha=config.lora_alpha,
+        lora_dropout=config.lora_dropout,
         target_modules="all-linear",
         bias="none",
         task_type=TaskType.CAUSAL_LM,
@@ -160,47 +198,62 @@ def init_processor_and_collator(model_id: str, max_length: int):
     return processor, collator
 
 
-def main():
-    args = parse_args()
+def build_dpo_config(config: DPOTrainingConfig) -> DPOConfig:
+    """Build TRL DPOConfig from resolved DPOTrainingConfig."""
+    gc_kwargs = {"use_reentrant": False} if config.gradient_checkpointing else None
+    return DPOConfig(
+        output_dir=config.output_dir,
+        precompute_ref_log_probs=True,
+        beta=config.beta,
+        learning_rate=config.learning_rate,
+        warmup_ratio=config.warmup_ratio,
+        per_device_train_batch_size=config.per_device_batch_size,
+        per_device_eval_batch_size=config.per_device_batch_size,
+        gradient_accumulation_steps=config.gradient_accumulation_steps,
+        max_length=config.max_length,
+        max_grad_norm=config.max_grad_norm,
+        num_train_epochs=config.num_epochs,
+        bf16=True,
+        gradient_checkpointing=config.gradient_checkpointing,
+        gradient_checkpointing_kwargs=gc_kwargs if gc_kwargs else {},
+        loss_type=["sigmoid"],
+        logging_steps=config.logging_steps,
+        save_steps=config.save_steps,
+        eval_steps=config.eval_steps,
+        save_total_limit=config.save_total_limit,
+        remove_unused_columns=False,
+        report_to="wandb" if not config.no_wandb else "none",
+        run_name=config.wandb_run_name,
+        seed=config.seed,
+    )
 
-    if args.seed is not None:
-        torch.manual_seed(args.seed)
+
+def print_config(config: DPOTrainingConfig) -> None:
+    """Print resolved config as a table."""
+    print("\n─ Resolved Config ─")
+    for field in config.__dataclass_fields__:
+        print(f"  {field:30s} = {getattr(config, field)}")
+    print()
+
+
+def main(raw_args: list[str] | None = None):
+    config = parse_config(raw_args)
+    print_config(config)
+
+    if config.seed is not None:
+        torch.manual_seed(config.seed)
 
     # Load dataset
-    train_ds, dev_ds = load_and_filter_dataset(args.dataset, args.cosine_threshold)
+    train_ds, dev_ds = load_and_filter_dataset(config.dataset, config.cosine_threshold, config.num_samples)
 
     # Init model
-    model = init_model(args)
+    model = init_model(config)
 
     # Setup processor and collator
-    processor, collator = init_processor_and_collator(args.model, args.max_length)
+    processor, collator = init_processor_and_collator(config.model, config.max_length)
 
     # DPO config
-    dpo_config = DPOConfig(
-        output_dir=args.output_dir,
-        precompute_ref_log_probs=True,
-        beta=args.beta,
-        learning_rate=args.learning_rate,
-        warmup_ratio=args.warmup_ratio,
-        per_device_train_batch_size=args.per_device_batch_size,
-        per_device_eval_batch_size=args.per_device_batch_size,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        max_length=args.max_length,
-        max_grad_norm=args.max_grad_norm,
-        num_train_epochs=args.num_epochs,
-        bf16=True,
-        gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
-        loss_type=["sigmoid"],
-        logging_steps=args.logging_steps,
-        save_steps=args.save_steps,
-        eval_steps=args.eval_steps,
-        save_total_limit=3,
-        remove_unused_columns=False,
-        report_to="wandb" if not args.no_wandb else "none",
-        run_name=args.wandb_run_name,
-        seed=args.seed,
-    )
+    dpo_config = build_dpo_config(config)
 
     trainer = AmyDPOTrainer(
         model=model,
@@ -211,10 +264,11 @@ def main():
         args=dpo_config,
     )
 
-    print(f"Starting DPO training: {len(train_ds)} train, " f"{len(dev_ds) if dev_ds else 0} dev")
+    print(f"Starting DPO training: {len(train_ds)} train, "
+          f"{len(dev_ds) if dev_ds else 0} dev")
     trainer.train()
 
-    final_path = os.path.join(args.output_dir, "final")
+    final_path = os.path.join(config.output_dir, "final")
     trainer.save_model(final_path)
     print(f"Final model saved to {final_path}")
 

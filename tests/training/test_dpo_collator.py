@@ -132,3 +132,28 @@ def test_truncation_respects_max_length():
     collator = DPOCollator(_MockProcessor(), pad_token_id=0, max_length=10)
     batch = collator([_make_example(audio_len=64000)])
     assert batch["input_ids"].shape[1] <= 10
+
+
+def test_extract_audio_from_audiodecoder():
+    """Regression: HF datasets 4.8+ returns torchcodec AudioDecoder, not dict."""
+    samps = torch.randn(1, 8000, dtype=torch.float32)
+
+    class _MockAudioSamples:
+        data = samps
+
+    class _MockMetadata:
+        sample_rate = 16000
+
+    class _MockAudioDecoder:
+        def get_all_samples(self):
+            return _MockAudioSamples
+
+        metadata = _MockMetadata()
+
+    collator = DPOCollator(_MockProcessor(), pad_token_id=0)
+    waveform = collator._extract_audio(_MockAudioDecoder())
+    assert isinstance(waveform, torch.Tensor)
+    assert waveform.dtype == torch.float32
+    assert waveform.ndim == 1
+    assert waveform.shape[0] == 8000
+    assert torch.equal(waveform, samps.flatten())

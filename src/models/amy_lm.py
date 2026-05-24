@@ -272,18 +272,24 @@ class AmyLM(MossAudioModel):
             inputs_embeds = self.get_input_embeddings()(input_ids)
 
         hook_handles: list = []
+        _saved_gc_states: dict[int, bool] = {}
+        _llm_layers = getattr(self.language_model, "layers", None)
         if audio_data is not None:
             if audio_input_mask is None:
                 raise ValueError("audio_input_mask is required when audio_data is provided.")
 
-            audio_embeds, deepstack = self.get_audio_features(audio_data, audio_data_seqlens)
+            audio_embeds, deepstack = self.get_audio_features(
+                audio_data.to(dtype=inputs_embeds.dtype), audio_data_seqlens
+            )
             audio_embeds = self.audio_adapter(audio_embeds)
 
             # Enrich audio embeddings with FACodec prosody/timbre BEFORE scattering
             audio_embeds = self._enrich_audio_embeds(
                 audio_embeds,
                 prosody_indices=prosody_indices,
-                timbre_vector=timbre_vector,
+                timbre_vector=timbre_vector.to(dtype=inputs_embeds.dtype)
+                if timbre_vector is not None
+                else None,
             )
 
             audio_token_count = int(audio_input_mask.to(torch.int32).sum().item())
@@ -295,7 +301,7 @@ class AmyLM(MossAudioModel):
 
             mask_expanded = audio_input_mask.unsqueeze(-1).expand_as(inputs_embeds)
             inputs_embeds = inputs_embeds.clone()
-            inputs_embeds.masked_scatter_(mask_expanded, audio_embeds)
+            inputs_embeds.masked_scatter_(mask_expanded, audio_embeds.to(dtype=inputs_embeds.dtype))
 
             if deepstack is not None and len(self.deepstack_audio_merger_list) > 0:
                 deepstack_audio_embeds = []
@@ -307,6 +313,19 @@ class AmyLM(MossAudioModel):
                             f"expected {audio_token_count}, got {int(ds.shape[1])}."
                         )
                     deepstack_audio_embeds.append(ds)
+
+                # Disable gradient checkpointing on deepstack-hooked LLM layers.
+                # GradientCheckpointingLayer.__call__ wraps nn.Module.__call__
+                # (including forward hooks) in torch.utils.checkpoint, which
+                # causes a CheckpointError when hooks produce .clone()-based
+                # side effects that change the saved-tensor count between
+                # forward and recomputation (use_reentrant=False).
+                if _llm_layers is not None:
+                    num_ds = len(deepstack_audio_embeds)
+                    for i in range(min(num_ds, len(_llm_layers))):
+                        layer = _llm_layers[i]
+                        _saved_gc_states[i] = layer.gradient_checkpointing
+                        layer.gradient_checkpointing = False
 
                 try:
                     hook_handles = self._register_llm_deepstack_hooks(
@@ -334,6 +353,10 @@ class AmyLM(MossAudioModel):
         finally:
             for h in hook_handles:
                 h.remove()
+            if _llm_layers is not None:
+                for i, saved in _saved_gc_states.items():
+                    if i < len(_llm_layers):
+                        _llm_layers[i].gradient_checkpointing = saved
 
         hidden_states = outputs[0]
         logits = self.lm_head(hidden_states)
