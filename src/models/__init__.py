@@ -3,6 +3,7 @@ from .embedding import ProsodyEmbedding, TimbreProjection, AcousticEmbedding, Co
 from .pooling import TemporalPool
 from .fusion import ResidualFusion
 from .moss_audio_model import MossAudioConfig, MossAudioModel
+from .amy_lm import AmyLMConfig, AmyLM
 
 __all__ = [
     "ProsodyEmbedding",
@@ -15,8 +16,8 @@ __all__ = [
     "MossAudioModel",
     "AmyForProsodyClassification",
     "BaselineClassifier",
-    "AmyMossLMConfig",
-    "AmyMossLM",
+    "AmyLMConfig",
+    "AmyLM",
 ]
 
 
@@ -29,8 +30,4 @@ def __getattr__(name: str):
         from .baseline_classifier import BaselineClassifier
 
         return BaselineClassifier
-    if name in {"AmyMossLMConfig", "AmyMossLM"}:
-        from .amy_lm import AmyMossLMConfig, AmyMossLM
-
-        return {"AmyMossLMConfig": AmyMossLMConfig, "AmyMossLM": AmyMossLM}[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
