@@ -93,6 +93,8 @@ class MossAudioConfig(PretrainedConfig):
         elif language_config is None:
             language_config = Qwen3Config()
             language_config._attn_implementation = "flash_attention_2"
+        else:
+            language_config._attn_implementation = "flash_attention_2"
 
         self.audio_config = audio_config
         self.language_config = language_config
