@@ -3,6 +3,7 @@ from .embedding import ProsodyEmbedding, TimbreProjection, AcousticEmbedding, Co
 from .pooling import TemporalPool
 from .fusion import ResidualFusion
 from .moss_audio_model import MossAudioConfig, MossAudioModel
+from .moss_audio import MossAudioWrapper
 from .amy_lm import AmyLMConfig, AmyLM
 
 __all__ = [
@@ -14,6 +15,7 @@ __all__ = [
     "ResidualFusion",
     "MossAudioConfig",
     "MossAudioModel",
+    "MossAudioWrapper",
     "AmyForProsodyClassification",
     "BaselineClassifier",
     "AmyLMConfig",
