@@ -30,6 +30,16 @@
 **Rationale:** Flash attention is a performance requirement, not optional. Configured at the language model level via Qwen3's `_attn_implementation`.
 **Consequences:** Must be done before `MossAudioModel.__init__()` constructs `self.language_model = Qwen3Model(config.language_config)`.
 
+## 2026-05-25 (Phase 1 learnings): MossAudioWrapper must survive Phase 1
+
+**Context:** Original plan said "Delete `src/models/moss_audio.py`" in Phase 1. Code quality review found `amy_classifier.py`, `baseline_classifier.py`, and `test_moss_audio.py` still import `MossAudioWrapper` from the deleted file.
+
+**Decision:** Keep `src/models/moss_audio.py` but update its imports to use the vendored `.moss_audio_model` module instead of vendor `sys.path` hacks. `MossAudioProcessor` import from vendor preserved (processing code not yet vendored).
+
+**Rationale:** The classifiers (Issue #8) are a separate concern from the AmyMossLM refactor. Deleting the wrapper breaks them. Keeping the file with updated imports eliminates the vendor path dependency for `MossAudioModel` while preserving backward compat for classifier consumers.
+
+**Consequences:** `moss_audio.py` still imports `MossAudioProcessor` from vendor via `sys.path`. This is acceptable — the processor vendoring is a separate concern. Phase 1 successfully eliminated vendor dependency for the core `MossAudioModel`/`MossAudioConfig` imports used by `AmyMossLM`.
+
 ## 2026-05-25: In-place rename, no backward compat
 **Context:** Renaming `AmyLM` → `AmyMossLM`, `AmyLMConfig` → `AmyMossLMConfig`.
 **Decision:** Delete old names entirely. No aliases, no re-exports, no deprecation path.

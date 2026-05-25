@@ -5,9 +5,9 @@
 > **For agentic workers:** Use subagent-driven-development. Start with the current phase — don't read ahead.
 
 ## Quick Status
-- **Current Phase:** Phase 1 — Vendor and Scaffold
-- **Next Up:** Phase 2 — Rewrite AmyMossLM (pending Phase 1 completion)
-- **Overall Progress:** 0/3 phases complete
+- **Current Phase:** Phase 2 — Rewrite AmyMossLM
+- **Next Up:** Phase 3 — Training Scripts and Tests (pending Phase 2 completion)
+- **Overall Progress:** 1/3 phases complete
 
 ## Start Here
 New implementer? Read in this order:
@@ -21,9 +21,9 @@ New implementer? Read in this order:
 
 | Phase | Status | Outcome | Document |
 |-------|--------|---------|----------|
-| 1 - Vendor and Scaffold | Pending | MossAudio source vendored, old code deleted, exports updated | [phase-01-vendor-and-scaffold.md](./phase-01-vendor-and-scaffold.md) |
-| 2 - Rewrite AmyMossLM | Pending | Full composition-based AmyMossLM with bootstrap | [phase-02-rewrite-amymosslm.md](./phase-02-rewrite-amymosslm.md) |
-| 3 - Training scripts and tests | Pending | DPO training updated, all tests pass | [phase-03-training-scripts-and-tests.md](./phase-03-training-scripts-and-tests.md) |
+| 1 - Vendor and Scaffold | ✅ Complete | MossAudio source vendored, wrapper preserved, exports updated | [phase-01-vendor-and-scaffold.md](./phase-01-vendor-and-scaffold.md) |
+| 2 - Rewrite AmyMossLM | 🔲 Not Started | Composition-based AmyMossLM with bootstrap | [phase-02-rewrite-amymosslm.md](./phase-02-rewrite-amymosslm.md) |
+| 3 - Training scripts and tests | 🔲 Pending | DPO training updated, all tests pass | [phase-03-training-scripts-and-tests.md](./phase-03-training-scripts-and-tests.md) |
 
 ## Key Decisions
 See [decisions.md](./decisions.md) for rationale on major choices.
