@@ -10,23 +10,13 @@ Issue #19, Group A3.
 
 from __future__ import annotations
 
-import os
-import sys
 from typing import Any, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-# Vendor path setup (same pattern as src/models/moss_audio.py)
-_VENDOR_MOSS_AUDIO_SRC_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "vendor", "MOSS-Audio", "src")
-)
-if os.path.isdir(_VENDOR_MOSS_AUDIO_SRC_PATH) and _VENDOR_MOSS_AUDIO_SRC_PATH not in sys.path:
-    sys.path.insert(0, _VENDOR_MOSS_AUDIO_SRC_PATH)
-
-from configuration_moss_audio import MossAudioConfig
-from modeling_moss_audio import MossAudioModel
+from .moss_audio_model import MossAudioConfig, MossAudioModel
 
 from .embedding import ProsodyEmbedding, TimbreProjection
 from .pooling import TemporalPool
