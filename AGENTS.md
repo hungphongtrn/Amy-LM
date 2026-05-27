@@ -57,7 +57,9 @@ Amy-LM/ (branch: exp/amylm-facodec)
 
 ## Testing
 
-- **Do NOT run heavy model tests (4B MOSS-Audio, training loops, full forward/backward) on CPU.** These tests are designed for GPU and will timeout or run for hours. Skip them on CPU-only machines. Accept that tests passing init/lambda/logic checks on CPU are sufficient; full verification happens on GPU.
+- **Always load models on GPU.** All model constructors (`MossAudioWrapper`, `AmyForProsodyClassification`, `BaselineClassifier`) auto-detect GPU by default (`device=None` → `"cuda" if available else "cpu"`) and use `torch.float16` precision. Tests must use the shared `device` fixture from `tests/conftest.py` and the `require_gpu` fixture for tests that perform forward/backward passes.
+- **Heavy model tests (4B MOSS-Audio, training loops, full forward/backward) are skipped on CPU** via `require_gpu` fixture. These tests are designed for GPU and will timeout or OOM on CPU. Accept that tests passing init/lambda/logic checks on CPU are sufficient; full verification happens on GPU.
+- **Never create or instantiate models on CPU.** Always create/load models directly on GPU. Creating on CPU and then moving to GPU is also not accepted — it hangs the machine. Use `.to("cuda")` or `device="cuda"` at construction time. If GPU is unavailable, use a minimal config for shape checks only.
 - To run only fast tests (no heavy model forward): `uv run python -m pytest tests/ --ignore=tests/training -k "not (train_epoch or evaluate or save_load_roundtrip or training_step)"`
 - Training scripts (`scripts/train_amy_classifier.py`) and heavy test suites are GPU-only. Use `nohup` for long-running GPU jobs (see Long-Running Tasks above).
 

@@ -1,11 +1,12 @@
-"""AmyLM — HF-compatible Speech Language Model with FACodec enrichment.
+"""AmyMossLM — HF-compatible Speech Language Model with FACodec enrichment.
 
-Inherits MossAudioModel, adding ProsodyEmbedding, TimbreProjection,
-TemporalPool, and ResidualFusion as permanent architecture modules.
-Overrides forward() to enrich audio embeddings with prosody/timbre
-before the <audio> placeholder-replacement step.
+Composes (HAS-A) MossAudioModel as self.moss rather than inheriting it.
+Supports constructor injection for pre-loaded (e.g., 4-bit quantized) backbones.
 
-Issue #19, Group A3.
+Trainable: ProsodyEmbedding, TimbreProjection, TemporalPool, ResidualFusion.
+Frozen (default): moss.audio_encoder, moss.audio_adapter, moss.language_model.
+
+Issue #26.
 """
 
 from __future__ import annotations
@@ -14,7 +15,10 @@ from typing import Any, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+from transformers import PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.modeling_utils import PreTrainedModel
+from transformers.generation.utils import GenerationMixin
 
 from .moss_audio_model import MossAudioConfig, MossAudioModel
 
@@ -23,32 +27,18 @@ from .pooling import TemporalPool
 from .fusion import ResidualFusion
 
 
-class AmyLMConfig(MossAudioConfig):
-    """Configuration for AmyLM — extends MossAudioConfig with FACodec stream settings.
+class AmyMossLMConfig(PretrainedConfig):
+    """Configuration for AmyMossLM — composition-based Speech LM with FACodec enrichment.
 
-    Additional fields beyond MossAudioConfig:
-        prosody_vocab_size: Codebook vocabulary size (default 1024)
-        prosody_init_strategy: 'random' or 'warm_start' (default 'random')
-        prosody_init_std: Std for random init (default 0.02)
-        prosody_input_rate: FACodec frame rate in Hz (default 80.0)
-        prosody_output_rate: Output frame rate in Hz (default 12.5)
-        timbre_dim: Timbre vector dimension (default 256)
-        hidden_dim: MOSS-Audio hidden dimension (default 2560)
-        freeze_audio_encoder: Freeze audio encoder (default True)
-        freeze_audio_adapter: Freeze audio adapter (default True)
-        freeze_llm: Freeze Qwen3 language model (default True)
+    Wraps MossAudioConfig as self.moss_config rather than extending it.
+    Exposes FACodec stream fields directly for serialization.
     """
 
-    model_type = "amy_lm"
+    model_type = "amy_moss_lm"
 
     def __init__(
         self,
-        audio_config=None,
-        language_config=None,
-        adapter_hidden_size=8192,
-        ignore_index=-100,
-        deepstack_num_inject_layers: Optional[int] = None,
-        # FACodec stream config
+        moss_config: dict | MossAudioConfig | None = None,
         prosody_vocab_size: int = 1024,
         prosody_init_strategy: str = "random",
         prosody_init_std: float = 0.02,
@@ -56,20 +46,11 @@ class AmyLMConfig(MossAudioConfig):
         prosody_output_rate: float = 12.5,
         timbre_dim: int = 256,
         hidden_dim: int = 2560,
-        # Freeze control
         freeze_audio_encoder: bool = True,
         freeze_audio_adapter: bool = True,
         freeze_llm: bool = True,
         **kwargs,
     ):
-        super().__init__(
-            audio_config=audio_config,
-            language_config=language_config,
-            adapter_hidden_size=adapter_hidden_size,
-            ignore_index=ignore_index,
-            deepstack_num_inject_layers=deepstack_num_inject_layers,
-            **kwargs,
-        )
         self.prosody_vocab_size = prosody_vocab_size
         self.prosody_init_strategy = prosody_init_strategy
         self.prosody_init_std = prosody_init_std
@@ -81,8 +62,24 @@ class AmyLMConfig(MossAudioConfig):
         self.freeze_audio_adapter = freeze_audio_adapter
         self.freeze_llm = freeze_llm
 
+        if moss_config is not None:
+            if isinstance(moss_config, dict):
+                moss_config = MossAudioConfig(**moss_config)
+            self.moss_config = moss_config
+        else:
+            self.moss_config = MossAudioConfig()
+
+        lang = self.moss_config.language_config
+        kwargs.setdefault("vocab_size", lang.vocab_size)
+        kwargs.setdefault("hidden_size", lang.hidden_size)
+        kwargs.setdefault("num_hidden_layers", lang.num_hidden_layers)
+
+        kwargs.setdefault("tie_word_embeddings", False)
+        super().__init__(**kwargs)
+
     def to_dict(self) -> dict[str, Any]:
         output = super().to_dict()
+        output["moss_config"] = self.moss_config.to_dict()
         output["prosody_vocab_size"] = self.prosody_vocab_size
         output["prosody_init_strategy"] = self.prosody_init_strategy
         output["prosody_init_std"] = self.prosody_init_std
@@ -96,25 +93,36 @@ class AmyLMConfig(MossAudioConfig):
         return output
 
 
-class AmyLM(MossAudioModel):
-    """Amy LM — HF-compatible Speech LM with prosody/timbre enrichment.
+class AmyMossLM(PreTrainedModel, GenerationMixin):
+    """Amy Moss LM — composition-based Speech LM with FACodec enrichment.
 
-    Inherits MossAudioModel's full architecture (Whisper encoder + GatedMLP
-    adapter + Qwen3 LM) and adds FACodec prosody/timbre modules with ResidualFusion.
-    The forward() method enriches audio embeddings between audio_adapter()
-    and masked_scatter_(), enabling gradient flow through the FACodec pathway
-    during DPO training.
+    Composes (HAS-A) a MossAudioModel as self.moss rather than inheriting it.
+    Supports constructor injection for pre-loaded (e.g., 4-bit quantized) backbones.
 
-    Trainable: ProsodyEmbedding (incl. projector), TimbreProjection, λ gates.
-    Frozen (default): audio_encoder, audio_adapter, language_model.
+    Trainable: ProsodyEmbedding, TimbreProjection, TemporalPool, ResidualFusion.
+    Frozen (default): moss.audio_encoder, moss.audio_adapter, moss.language_model.
     """
 
-    config_class = AmyLMConfig
+    config_class = AmyMossLMConfig
+    base_model_prefix = "moss"
+    _no_split_modules = ["Qwen3DecoderLayer", "WhisperEncoderLayer"]
+    _skip_keys_device_placement = ["past_key_values"]
+    supports_gradient_checkpointing = True
+    _tied_weights_keys: List[str] = []
 
-    def __init__(self, config: AmyLMConfig):
+    def __init__(self, config: AmyMossLMConfig, moss: MossAudioModel | None = None):
         super().__init__(config)
 
-        # FACodec enrichment modules (prosody + timbre only, per Stream Activation Config)
+        if moss is not None:
+            self.moss = moss
+        else:
+            self.moss = MossAudioModel(config.moss_config)
+
+        self._add_facodec_modules(config)
+        self._apply_freeze(config)
+        self.post_init()
+
+    def _add_facodec_modules(self, config: AmyMossLMConfig) -> None:
         self.prosody_embedding = ProsodyEmbedding(
             vocab_size=config.prosody_vocab_size,
             embed_dim=config.hidden_dim,
@@ -131,20 +139,28 @@ class AmyLM(MossAudioModel):
         )
         self.residual_fusion = ResidualFusion(hidden_dim=config.hidden_dim)
 
-        self._apply_freeze(config)
-        self.post_init()
-
-    def _apply_freeze(self, config: AmyLMConfig) -> None:
-        """Apply freeze configuration to backbone modules."""
+    def _apply_freeze(self, config: AmyMossLMConfig) -> None:
         if config.freeze_audio_encoder:
-            for p in self.audio_encoder.parameters():
+            for p in self.moss.audio_encoder.parameters():
                 p.requires_grad = False
         if config.freeze_audio_adapter:
-            for p in self.audio_adapter.parameters():
+            for p in self.moss.audio_adapter.parameters():
                 p.requires_grad = False
         if config.freeze_llm:
-            for p in self.language_model.parameters():
+            for p in self.moss.language_model.parameters():
                 p.requires_grad = False
+
+    def get_input_embeddings(self):
+        return self.moss.get_input_embeddings()
+
+    def set_input_embeddings(self, value):
+        self.moss.set_input_embeddings(value)
+
+    def get_output_embeddings(self):
+        return self.moss.get_output_embeddings()
+
+    def set_output_embeddings(self, new_embeddings):
+        self.moss.set_output_embeddings(new_embeddings)
 
     def _enrich_audio_embeds(
         self,
@@ -168,9 +184,8 @@ class AmyLM(MossAudioModel):
         streams: dict[str, torch.Tensor] = {}
 
         if prosody_indices is not None:
-            p_emb = self.prosody_embedding(prosody_indices)      # [B, T80, D]
-            p_emb = self.temporal_pool(p_emb)                     # [B, T12, D]
-            # Align to audio_embeds length
+            p_emb = self.prosody_embedding(prosody_indices)
+            p_emb = self.temporal_pool(p_emb)
             if p_emb.shape[1] < audio_embeds.shape[1]:
                 pad = torch.zeros(
                     p_emb.shape[0],
@@ -185,8 +200,8 @@ class AmyLM(MossAudioModel):
             streams["prosody"] = p_emb.to(device=audio_embeds.device, dtype=audio_embeds.dtype)
 
         if timbre_vector is not None:
-            t_emb = self.timbre_projection(timbre_vector)           # [B, D]
-            t_emb = t_emb.unsqueeze(1).expand(-1, audio_embeds.shape[1], -1)  # [B, T, D]
+            t_emb = self.timbre_projection(timbre_vector)
+            t_emb = t_emb.unsqueeze(1).expand(-1, audio_embeds.shape[1], -1)
             streams["timbre"] = t_emb.to(device=audio_embeds.device, dtype=audio_embeds.dtype)
 
         return self.residual_fusion(
@@ -244,7 +259,6 @@ class AmyLM(MossAudioModel):
         Returns:
             CausalLMOutputWithPast or tuple of (loss, logits, ...).
         """
-        # Extract FACodec inputs from kwargs
         prosody_indices = kwargs.pop("prosody_indices", None)
         timbre_vector = kwargs.pop("timbre_vector", None)
 
@@ -259,21 +273,20 @@ class AmyLM(MossAudioModel):
         )
 
         if inputs_embeds is None:
-            inputs_embeds = self.get_input_embeddings()(input_ids)
+            inputs_embeds = self.moss.get_input_embeddings()(input_ids)
 
         hook_handles: list = []
         _saved_gc_states: dict[int, bool] = {}
-        _llm_layers = getattr(self.language_model, "layers", None)
+        _llm_layers = getattr(self.moss.language_model, "layers", None)
         if audio_data is not None:
             if audio_input_mask is None:
                 raise ValueError("audio_input_mask is required when audio_data is provided.")
 
-            audio_embeds, deepstack = self.get_audio_features(
+            audio_embeds, deepstack = self.moss.get_audio_features(
                 audio_data.to(dtype=inputs_embeds.dtype), audio_data_seqlens
             )
-            audio_embeds = self.audio_adapter(audio_embeds)
+            audio_embeds = self.moss.audio_adapter(audio_embeds)
 
-            # Enrich audio embeddings with FACodec prosody/timbre BEFORE scattering
             audio_embeds = self._enrich_audio_embeds(
                 audio_embeds,
                 prosody_indices=prosody_indices,
@@ -293,10 +306,10 @@ class AmyLM(MossAudioModel):
             inputs_embeds = inputs_embeds.clone()
             inputs_embeds.masked_scatter_(mask_expanded, audio_embeds.to(dtype=inputs_embeds.dtype))
 
-            if deepstack is not None and len(self.deepstack_audio_merger_list) > 0:
+            if deepstack is not None and len(self.moss.deepstack_audio_merger_list) > 0:
                 deepstack_audio_embeds = []
-                for i, x in enumerate(deepstack[: len(self.deepstack_audio_merger_list)]):
-                    ds = self.deepstack_audio_merger_list[i](x)
+                for i, x in enumerate(deepstack[: len(self.moss.deepstack_audio_merger_list)]):
+                    ds = self.moss.deepstack_audio_merger_list[i](x)
                     if int(ds.shape[1]) != audio_token_count:
                         raise ValueError(
                             f"DeepStack audio seq_len mismatch at index {i}: "
@@ -304,12 +317,6 @@ class AmyLM(MossAudioModel):
                         )
                     deepstack_audio_embeds.append(ds)
 
-                # Disable gradient checkpointing on deepstack-hooked LLM layers.
-                # GradientCheckpointingLayer.__call__ wraps nn.Module.__call__
-                # (including forward hooks) in torch.utils.checkpoint, which
-                # causes a CheckpointError when hooks produce .clone()-based
-                # side effects that change the saved-tensor count between
-                # forward and recomputation (use_reentrant=False).
                 if _llm_layers is not None:
                     num_ds = len(deepstack_audio_embeds)
                     for i in range(min(num_ds, len(_llm_layers))):
@@ -318,7 +325,7 @@ class AmyLM(MossAudioModel):
                         layer.gradient_checkpointing = False
 
                 try:
-                    hook_handles = self._register_llm_deepstack_hooks(
+                    hook_handles = self.moss._register_llm_deepstack_hooks(
                         audio_input_mask, deepstack_audio_embeds
                     )
                 except Exception:
@@ -327,7 +334,7 @@ class AmyLM(MossAudioModel):
                     raise
 
         try:
-            outputs = self.language_model(
+            outputs = self.moss.language_model(
                 input_ids=None,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
@@ -349,14 +356,14 @@ class AmyLM(MossAudioModel):
                         _llm_layers[i].gradient_checkpointing = saved
 
         hidden_states = outputs[0]
-        logits = self.lm_head(hidden_states)
+        logits = self.moss.lm_head(hidden_states)
 
         loss = None
         if labels is not None:
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
-            loss_fct = nn.CrossEntropyLoss(ignore_index=self.config.ignore_index)
-            shift_logits = shift_logits.view(-1, self.config.language_config.vocab_size)
+            loss_fct = nn.CrossEntropyLoss(ignore_index=self.config.moss_config.ignore_index)
+            shift_logits = shift_logits.view(-1, self.config.moss_config.language_config.vocab_size)
             shift_labels = shift_labels.view(-1)
             shift_labels = shift_labels.to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
@@ -372,3 +379,71 @@ class AmyLM(MossAudioModel):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+
+    def prepare_inputs_for_generation(
+        self,
+        input_ids,
+        past_key_values=None,
+        attention_mask=None,
+        inputs_embeds=None,
+        cache_position=None,
+        **kwargs,
+    ):
+        position_ids = kwargs.get("position_ids", None)
+        if cache_position is not None and cache_position[0] > 0:
+            input_ids = input_ids[:, -1:]
+            if position_ids is not None:
+                position_ids = position_ids[:, -1:]
+            audio_data = None
+            audio_input_mask = None
+            audio_data_seqlens = None
+        else:
+            audio_data = kwargs.get("audio_data", None)
+            audio_input_mask = kwargs.get("audio_input_mask", None)
+            audio_data_seqlens = kwargs.get("audio_data_seqlens", None)
+
+        if inputs_embeds is not None and past_key_values is None:
+            model_inputs = {"inputs_embeds": inputs_embeds}
+        else:
+            model_inputs = {"input_ids": input_ids}
+
+        model_inputs.update(
+            {
+                "past_key_values": past_key_values,
+                "use_cache": kwargs.get("use_cache"),
+                "attention_mask": attention_mask,
+                "position_ids": position_ids,
+                "audio_data": audio_data,
+                "audio_input_mask": audio_input_mask,
+                "audio_data_seqlens": audio_data_seqlens,
+            }
+        )
+
+        return model_inputs
+
+    @classmethod
+    def prepare_base_checkpoint(
+        cls,
+        save_path: str,
+        moss_model_id: str = "OpenMOSS-Team/MOSS-Audio-4B-Thinking",
+    ):
+        """Bootstrap a full AmyMossLM checkpoint from MOSS-Audio weights.
+
+        Loads MossAudioModel weights, wraps in AmyMossLM composition, saves
+        the full checkpoint (including randomly-initialized FACodec modules)
+        to the specified path. Use this once to create the base checkpoint.
+        """
+        moss = MossAudioModel.from_pretrained(
+            moss_model_id,
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16,
+        )
+        config = AmyMossLMConfig(moss_config=moss.config)
+        model = cls(config, moss=moss)
+        model.save_pretrained(save_path)
+        config.save_pretrained(save_path)
+        return model
+
+
+AmyMossLMConfig.register_for_auto_class()
+AmyMossLM.register_for_auto_class("AutoModelForCausalLM")
