@@ -1,3 +1,9 @@
+"""Tests for BaselineClassifier — MOSS-Audio frozen backbone + Linear classifier."""
+
+from __future__ import annotations
+
+from copy import deepcopy
+
 import pytest
 import torch
 
@@ -5,9 +11,14 @@ from src.models.baseline_classifier import BaselineClassifier
 
 
 class TestBaselineForwardShape:
+    """Verify forward pass produces correct output shapes.
+
+    These tests run full forward passes through the 4B model and require GPU.
+    """
+
     @pytest.fixture
-    def model(self):
-        return BaselineClassifier(device="cpu")
+    def model(self, require_gpu, device):
+        return BaselineClassifier(device=device)
 
     def test_forward_output_shape(self, model):
         """Forward pass produces [B, 2] logits."""
@@ -24,9 +35,14 @@ class TestBaselineForwardShape:
 
 
 class TestBaselineFreeze:
+    """Verify backbone is frozen and trainable params are correct.
+
+    These tests instantiate the 4B model and require GPU.
+    """
+
     @pytest.fixture
-    def model(self):
-        return BaselineClassifier(device="cpu")
+    def model(self, require_gpu, device):
+        return BaselineClassifier(device=device)
 
     def test_backbone_fully_frozen(self, model):
         for name, param in model.wrapper.named_parameters():
@@ -54,7 +70,10 @@ class TestBaselineFreeze:
 
 class TestBaselineAmyEquivalence:
     """BaselineClassifier must produce identical logits to AmyForProsodyClassification
-    when lambdas=0 and both have the same classifier weights."""
+    when lambdas=0 and both have the same classifier weights.
+
+    These tests run forward passes through the 4B model and require GPU.
+    """
 
     @pytest.fixture
     def audio(self):
@@ -68,15 +87,15 @@ class TestBaselineAmyEquivalence:
     def timbre_vector(self):
         return torch.randn(1, 256)
 
-    def test_forward_equivalence_at_zero_lambda(self, audio, prosody_indices, timbre_vector):
+    def test_forward_equivalence_at_zero_lambda(
+        self, require_gpu, device, audio, prosody_indices, timbre_vector
+    ):
         """With identical classifier weights, baseline and Amy (lambda=0) logits must match."""
-        from copy import deepcopy
-
         from src.models import AmyForProsodyClassification
 
         vectors = torch.randn(1024, 8)
-        baseline = BaselineClassifier(device="cpu")
-        amy = AmyForProsodyClassification(warm_start_vectors=vectors, device="cpu")
+        baseline = BaselineClassifier(device=device)
+        amy = AmyForProsodyClassification(warm_start_vectors=vectors, device=device)
 
         amy.classifier.load_state_dict(deepcopy(baseline.classifier.state_dict()))
         assert torch.equal(baseline.classifier.weight, amy.classifier.weight)

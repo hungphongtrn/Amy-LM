@@ -18,13 +18,13 @@ class BaselineClassifier(nn.Module):
     def __init__(
         self,
         moss_model_id: str = "OpenMOSS-Team/MOSS-Audio-4B-Thinking",
-        device: torch.device | str = "cpu",
+        device: torch.device | str | None = None,
         num_classes: int = 2,
         hidden_dim: int = 2560,
         gradient_checkpointing: bool = False,
     ) -> None:
         super().__init__()
-        self.device = torch.device(device)
+        self.device = torch.device(device) if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.hidden_dim = hidden_dim
         self.num_classes = num_classes
 
@@ -34,6 +34,8 @@ class BaselineClassifier(nn.Module):
 
         self._freeze_backbone()
         self._ensure_head_trainable()
+
+        self.to(self.device)
 
         if gradient_checkpointing:
             self.get_language_model().gradient_checkpointing_enable()

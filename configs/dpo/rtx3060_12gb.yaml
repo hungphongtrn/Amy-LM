@@ -1,0 +1,56 @@
+# Optimized config for single RTX 3060 12GB.
+# Strategy: maximize effective batch size within 12GB VRAM envelope.
+
+model: OpenMOSS-Team/MOSS-Audio-4B-Thinking
+dataset: hungphongtrn/nvtts_facodec
+cosine_threshold: 0.85
+
+# ── QLoRA (capacity-optimized for 12GB) ─────────────────────────────────────
+lora_r: 16                               # Rank 16 — good capacity/VRAM tradeoff on 12GB
+lora_alpha: 32                           # Standard 2× r scaling
+lora_dropout: 0.05                       # Light regularization
+
+# ── DPO ─────────────────────────────────────────────────────────────────────
+beta: 0.1                                # Standard DPO temperature
+
+# ── Optimization (VRAM-tuned) ───────────────────────────────────────────────
+learning_rate: 5.0e-5                    # Conservative LR for QLoRA
+warmup_ratio: 0.1                        # Linear warmup over first 10% of steps
+max_length: 1024                         # Sequence length — critical VRAM lever
+                                          # 1024 fits ~8s audio + prompt comfortably on 12GB
+                                          # If OOM, reduce to 768 or 512 first
+per_device_batch_size: 1                 # Single sample per step (VRAM)
+gradient_accumulation_steps: 8           # Effective batch = 1×8 = 8
+                                          # Higher = better gradient estimates, zero VRAM cost
+num_epochs: 3.0                          # 3 epochs on ~3600 samples ≈ 10800 steps total
+max_grad_norm: 1.0                       # Gradient clipping
+
+# ── Logging & Checkpointing ─────────────────────────────────────────────────
+output_dir: ./output/amy_dpo_rtx3060
+logging_steps: 10
+save_steps: 500
+eval_steps: 500
+save_total_limit: 3
+wandb_project: amy-lm-dpo
+wandb_run_name: null
+no_wandb: false
+
+seed: 42
+
+# ── VRAM Notes ──────────────────────────────────────────────────────────────
+# 12GB breakdown (approximate):
+#   MOSS-Audio 4B (4-bit NF4)   ~2.5 GB
+#   LoRA adapters (bf16)        ~0.3 GB  (rank 16 on all-linear)
+#   AmyLM embeddings + fusion   ~0.1 GB
+#   Optimizer states (8-bit)    ~1.0 GB  (paged_adamw_8bit)
+#   Activations + gradients     ~4.0 GB  (with gc_recompute + bf16)
+#   Forward pass                ~1.5 GB  (audio mel, prosody/timbre vecs)
+#   Buffer / fragmentation      ~2.0 GB
+#   ─────────────────────────────────
+#   Total                       ~11.4 GB ✓
+#
+# If OOM, try in order:
+#   1. Reduce max_length → 768 or 512  (cuts sequence memory linearly)
+#   2. Reduce lora_r → 8               (cuts adapter VRAM)
+#   3. Set per_device_batch_size=1      (already minimal)
+#   4. Add --no-wandb                   (saves ~100MB)

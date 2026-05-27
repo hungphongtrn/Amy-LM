@@ -1,0 +1,49 @@
+# Base DPO training config — all tunable hyperparameters documented.
+# Override via CLI:  python scripts/train_amy_dpo.py --config configs/dpo/base.yaml --beta 0.2
+# Override via YAML: copy this file, edit values, pass --config your-copy.yaml
+
+# ── Model ───────────────────────────────────────────────────────────────────
+model: OpenMOSS-Team/MOSS-Audio-4B-Thinking       # Pretrained MOSS-Audio ID or local path
+
+# ── Dataset ─────────────────────────────────────────────────────────────────
+dataset: hungphongtrn/nvtts_facodec               # HuggingFace dataset ID
+cosine_threshold: 0.85                             # Keep samples with cosine_similarity < this value
+                                                   # (lower = pairs are more different = harder DPO signal)
+
+# ── QLoRA ───────────────────────────────────────────────────────────────────
+# Applied on all Qwen3 linear layers via target_modules="all-linear".
+# 4-bit NF4 quantization on backbone, LoRA adapters in bf16.
+lora_r: 8                                          # LoRA rank  (higher = more capacity, more VRAM)
+lora_alpha: 16                                     # LoRA alpha (scaling factor = alpha/r, typically 2× r)
+lora_dropout: 0.05                                 # LoRA dropout for regularization
+
+# ── DPO ─────────────────────────────────────────────────────────────────────
+beta: 0.1                                          # DPO temperature — controls divergence from reference
+                                                   # Lower = stronger preference signal, risk of overfitting
+                                                   # Higher = closer to reference, more conservative
+
+# ── Optimization ────────────────────────────────────────────────────────────
+learning_rate: 5.0e-5                              # Peak LR (cosine schedule to 0); 5e-5 is standard for QLoRA
+warmup_ratio: 0.1                                   # Fraction of steps for linear warmup
+max_length: 1024                                    # Max token sequence length (prompt + response)
+per_device_batch_size: 1                            # Samples per GPU per step
+gradient_accumulation_steps: 4                      # Effective batch = per_device × grad_accum
+num_epochs: 3.0                                     # Training epochs  (~3×effective_batch_size passes)
+max_grad_norm: 1.0                                  # Gradient clipping threshold
+
+# ── Precision ───────────────────────────────────────────────────────────────
+# bf16 & gradient_checkpointing are always enabled (hardcoded in training script).
+# BitsAndBytes: 4-bit NF4, double quant, bf16 compute dtype.
+
+# ── Logging & Checkpointing ─────────────────────────────────────────────────
+output_dir: ./output/amy_dpo                        # Directory for checkpoints + final model
+logging_steps: 10                                   # Log metrics every N steps
+save_steps: 500                                     # Save checkpoint every N steps
+eval_steps: 500                                     # Run eval every N steps
+save_total_limit: 3                                 # Keep only the last N checkpoints
+wandb_project: amy-lm-dpo                          # Weights & Biases project name
+wandb_run_name: null                                # W&B run name (null = auto-generate)
+no_wandb: false                                     # Set true to disable W&B logging
+
+# ── Misc ────────────────────────────────────────────────────────────────────
+seed: 42                                            # Random seed for reproducibility

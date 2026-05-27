@@ -38,7 +38,7 @@ class AmyForProsodyClassification(nn.Module):
         self,
         warm_start_vectors: torch.Tensor,
         moss_model_id: str = "OpenMOSS-Team/MOSS-Audio-4B-Thinking",
-        device: torch.device | str = "cpu",
+        device: torch.device | str | None = None,
         stream_config: dict | None = None,
         hidden_dim: int = 2560,
         num_classes: int = 2,
@@ -49,7 +49,7 @@ class AmyForProsodyClassification(nn.Module):
         gradient_checkpointing: bool = False,
     ) -> None:
         super().__init__()
-        self.device = torch.device(device)
+        self.device = torch.device(device) if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.hidden_dim = hidden_dim
         self.num_classes = num_classes
         self.output_rate = output_rate
@@ -90,6 +90,8 @@ class AmyForProsodyClassification(nn.Module):
         self._freeze_backbone()
         self._ensure_facodec_trainable()
 
+        self.to(self.device)
+
         if gradient_checkpointing:
             self.get_language_model().gradient_checkpointing_enable()
 
@@ -123,6 +125,9 @@ class AmyForProsodyClassification(nn.Module):
         Returns:
             Logits [B, 2] for binary sarcasm classification.
         """
+        prosody_indices = prosody_indices.to(self.device)
+        timbre_vector = timbre_vector.to(self.device)
+
         with torch.no_grad():
             semantic = self.wrapper.encode_semantic(audio)
         T_moss = semantic.shape[1]

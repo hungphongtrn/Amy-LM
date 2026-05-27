@@ -1,5 +1,7 @@
 """Tests for AmyTrainer -- vanilla PyTorch training loop."""
 
+from __future__ import annotations
+
 import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
@@ -20,80 +22,86 @@ def _make_synthetic_loader(n_samples=4, n_frames=24000, n_prosody=120):
 
 
 class TestTrainerInit:
-    """Verify trainer initializes with both Amy and Baseline models."""
+    """Verify trainer initializes with both Amy and Baseline models.
 
-    def test_amy_trainer_initialization(self):
+    These tests instantiate the 4B MOSS-Audio model and require GPU.
+    """
+
+    def test_amy_trainer_initialization(self, require_gpu, device):
         """Trainer initializes with an Amy model."""
         from src.models import AmyForProsodyClassification
         from src.training.trainer import AmyTrainer
 
         vectors = torch.randn(1024, 8)
-        model = AmyForProsodyClassification(warm_start_vectors=vectors, device="cpu")
-        trainer = AmyTrainer(model, device=torch.device("cpu"), is_baseline=False)
+        model = AmyForProsodyClassification(warm_start_vectors=vectors, device=device)
+        trainer = AmyTrainer(model, device=device, is_baseline=False)
         assert trainer.optimizer is not None
         assert trainer.current_epoch == 0
         assert not trainer.is_baseline
 
-    def test_baseline_trainer_initialization(self):
+    def test_baseline_trainer_initialization(self, require_gpu, device):
         """Trainer initializes with a BaselineClassifier."""
         from src.models import BaselineClassifier
         from src.training.trainer import AmyTrainer
 
-        model = BaselineClassifier(device="cpu")
-        trainer = AmyTrainer(model, device=torch.device("cpu"), is_baseline=True)
+        model = BaselineClassifier(device=device)
+        trainer = AmyTrainer(model, device=device, is_baseline=True)
         assert trainer.is_baseline
         assert trainer.current_epoch == 0
 
 
 class TestTrainerForward:
-    """Verify training_step, train_epoch, and evaluate."""
+    """Verify training_step, train_epoch, and evaluate.
+
+    These run full forward/backward passes through the 4B model. GPU required.
+    """
 
     @pytest.fixture
-    def amy_model(self):
+    def amy_model(self, require_gpu, device):
         from src.models import AmyForProsodyClassification
 
         vectors = torch.randn(1024, 8)
-        return AmyForProsodyClassification(warm_start_vectors=vectors, device="cpu")
+        return AmyForProsodyClassification(warm_start_vectors=vectors, device=device)
 
     @pytest.fixture
     def loader(self):
         return _make_synthetic_loader()
 
-    def test_train_epoch_returns_metrics(self, amy_model, loader):
+    def test_train_epoch_returns_metrics(self, amy_model, loader, device):
         """train_epoch runs and returns metrics dict with expected keys."""
         from src.training.trainer import AmyTrainer
 
-        trainer = AmyTrainer(amy_model, device=torch.device("cpu"), is_baseline=False)
+        trainer = AmyTrainer(amy_model, device=device, is_baseline=False)
         metrics = trainer.train_epoch(loader)
         assert "train_loss" in metrics
         assert "train_accuracy" in metrics
         assert "train_f1" in metrics
         assert 0.0 <= metrics["train_accuracy"] <= 1.0
 
-    def test_evaluate_returns_metrics(self, amy_model, loader):
+    def test_evaluate_returns_metrics(self, amy_model, loader, device):
         """evaluate returns metrics dict with expected keys."""
         from src.training.trainer import AmyTrainer
 
-        trainer = AmyTrainer(amy_model, device=torch.device("cpu"), is_baseline=False)
+        trainer = AmyTrainer(amy_model, device=device, is_baseline=False)
         metrics = trainer.evaluate(loader)
         assert "val_loss" in metrics
         assert "val_accuracy" in metrics
         assert "val_f1" in metrics
 
-    def test_baseline_training_step_runs(self, loader):
+    def test_baseline_training_step_runs(self, loader, device):
         """Baseline model's training_step ignores prosody/timbre args."""
         from src.models import BaselineClassifier
         from src.training.trainer import AmyTrainer
 
-        model = BaselineClassifier(device="cpu")
-        trainer = AmyTrainer(model, device=torch.device("cpu"), is_baseline=True)
+        model = BaselineClassifier(device=device)
+        trainer = AmyTrainer(model, device=device, is_baseline=True)
         trainer.train_epoch(loader)
 
-    def test_training_step_returns_correct_types(self, amy_model, loader):
+    def test_training_step_returns_correct_types(self, amy_model, loader, device):
         """training_step returns (loss, logits [B,2], labels [B])."""
         from src.training.trainer import AmyTrainer
 
-        trainer = AmyTrainer(amy_model, device=torch.device("cpu"), is_baseline=False)
+        trainer = AmyTrainer(amy_model, device=device, is_baseline=False)
         batch = next(iter(loader))
         loss, logits, labels = trainer.training_step(batch)
         assert isinstance(loss, torch.Tensor)
@@ -103,20 +111,23 @@ class TestTrainerForward:
 
 
 class TestCheckpoint:
-    """Verify save/load roundtrip."""
+    """Verify save/load roundtrip.
 
-    def test_save_load_roundtrip(self, tmp_path):
+    Instantiates the 4B MOSS-Audio model. GPU required.
+    """
+
+    def test_save_load_roundtrip(self, tmp_path, require_gpu, device):
         from src.models import BaselineClassifier
         from src.training.trainer import AmyTrainer
 
-        model = BaselineClassifier(device="cpu")
-        trainer = AmyTrainer(model, device=torch.device("cpu"), is_baseline=True)
+        model = BaselineClassifier(device=device)
+        trainer = AmyTrainer(model, device=device, is_baseline=True)
         trainer.current_epoch = 5
         path = tmp_path / "checkpoint.pt"
         trainer.save_checkpoint(str(path))
 
-        model2 = BaselineClassifier(device="cpu")
-        trainer2 = AmyTrainer(model2, device=torch.device("cpu"), is_baseline=True)
+        model2 = BaselineClassifier(device=device)
+        trainer2 = AmyTrainer(model2, device=device, is_baseline=True)
         trainer2.load_checkpoint(str(path))
 
         assert trainer2.current_epoch == 5
@@ -126,26 +137,30 @@ class TestCheckpoint:
 
 
 class TestLambdaLogging:
-    """Verify lambda_p and lambda_t are logged for Amy, excluded for baseline."""
+    """Verify lambda_p and lambda_t are logged for Amy, excluded for baseline.
 
-    def test_amy_logs_lambdas(self):
+    These instantiate models but do no forward pass. Still require GPU
+    for model loading.
+    """
+
+    def test_amy_logs_lambdas(self, require_gpu, device):
         """Amy model's _get_lambdas returns lambda_p and lambda_t."""
         from src.models import AmyForProsodyClassification
         from src.training.trainer import AmyTrainer
 
         vectors = torch.randn(1024, 8)
-        model = AmyForProsodyClassification(warm_start_vectors=vectors, device="cpu")
-        trainer = AmyTrainer(model, device=torch.device("cpu"), is_baseline=False)
+        model = AmyForProsodyClassification(warm_start_vectors=vectors, device=device)
+        trainer = AmyTrainer(model, device=device, is_baseline=False)
         lambdas = trainer._get_lambdas()
         assert "lambda_p" in lambdas
         assert "lambda_t" in lambdas
         assert lambdas["lambda_p"] == 0.0
         assert lambdas["lambda_t"] == 0.0
 
-    def test_baseline_returns_empty_lambdas(self):
+    def test_baseline_returns_empty_lambdas(self, require_gpu, device):
         from src.models import BaselineClassifier
         from src.training.trainer import AmyTrainer
 
-        model = BaselineClassifier(device="cpu")
-        trainer = AmyTrainer(model, device=torch.device("cpu"), is_baseline=True)
+        model = BaselineClassifier(device=device)
+        trainer = AmyTrainer(model, device=device, is_baseline=True)
         assert trainer._get_lambdas() == {}

@@ -40,17 +40,20 @@ class MossAudioWrapper(nn.Module):
     def __init__(
         self,
         model_id: str = "OpenMOSS-Team/MOSS-Audio-4B-Thinking",
-        device: torch.device | str = "cpu",
+        device: torch.device | str | None = None,
     ) -> None:
         super().__init__()
         self.model_id = model_id
-        self.device = torch.device(device)
+        self.device = torch.device(device) if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.model = MossAudioModel.from_pretrained(
-            model_id,
-            trust_remote_code=True,
-            torch_dtype=torch.float32,
-        )
+        from_pretrained_kwargs: dict = {
+            "trust_remote_code": True,
+            "torch_dtype": torch.bfloat16,
+        }
+        if self.device.type == "cuda":
+            from_pretrained_kwargs["device_map"] = str(self.device)
+
+        self.model = MossAudioModel.from_pretrained(model_id, **from_pretrained_kwargs)
         self.model.eval()
         self.processor = MossAudioProcessor.from_pretrained(
             model_id,

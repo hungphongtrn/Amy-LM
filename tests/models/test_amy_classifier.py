@@ -1,6 +1,11 @@
 """Tests for AmyForProsodyClassification — end-to-end model assembly."""
+
+from __future__ import annotations
+
 import pytest
 import torch
+import torch.nn.functional as F
+
 from src.models.amy_classifier import AmyForProsodyClassification
 
 
@@ -10,14 +15,17 @@ def make_prosody_codebook_vectors():
 
 
 class TestAmyForwardShape:
-    """Verify forward pass produces correct output shapes."""
+    """Verify forward pass produces correct output shapes.
+
+    These tests run full forward passes and require GPU.
+    """
 
     @pytest.fixture
-    def model(self):
+    def model(self, require_gpu, device):
         vectors = make_prosody_codebook_vectors()
         return AmyForProsodyClassification(
             warm_start_vectors=vectors,
-            device="cpu",
+            device=device,
         )
 
     def test_forward_output_shape(self, model):
@@ -42,14 +50,17 @@ class TestAmyForwardShape:
 
 
 class TestAmyGradientFlow:
-    """Verify which parameters receive gradients."""
+    """Verify which parameters receive gradients.
+
+    These tests run backward passes and require GPU.
+    """
 
     @pytest.fixture
-    def model(self):
+    def model(self, require_gpu, device):
         vectors = make_prosody_codebook_vectors()
         return AmyForProsodyClassification(
             warm_start_vectors=vectors,
-            device="cpu",
+            device=device,
         )
 
     @pytest.fixture
@@ -73,7 +84,7 @@ class TestAmyGradientFlow:
         P = model.temporal_pool(p_emb)
         if P.shape[1] != T_moss:
             P = P.transpose(1, 2)
-            P = torch.nn.functional.adaptive_avg_pool1d(P, T_moss)
+            P = F.adaptive_avg_pool1d(P, T_moss)
             P = P.transpose(1, 2)
         t_proj = model.timbre_projection(timbre)
         T = t_proj.unsqueeze(1).expand(-1, T_moss, -1)
@@ -115,14 +126,17 @@ class TestAmyGradientFlow:
 
 
 class TestAmyBaselineEquivalence:
-    """Verify Amy model equals MOSS-Audio baseline when lambdas are zero."""
+    """Verify Amy model equals MOSS-Audio baseline when lambdas are zero.
+
+    These tests run forward passes through the 4B language model and require GPU.
+    """
 
     @pytest.fixture
-    def model(self):
+    def model(self, require_gpu, device):
         vectors = make_prosody_codebook_vectors()
         return AmyForProsodyClassification(
             warm_start_vectors=vectors,
-            device="cpu",
+            device=device,
         )
 
     @pytest.fixture
@@ -168,7 +182,7 @@ class TestAmyBaselineEquivalence:
             P = model.temporal_pool(p_emb)
             if P.shape[1] != T_moss:
                 P = P.transpose(1, 2)
-                P = torch.nn.functional.adaptive_avg_pool1d(P, T_moss)
+                P = F.adaptive_avg_pool1d(P, T_moss)
                 P = P.transpose(1, 2)
             t_proj = model.timbre_projection(timbre_vector)
             T = t_proj.unsqueeze(1).expand(-1, T_moss, -1)
@@ -188,55 +202,58 @@ class TestAmyBaselineEquivalence:
 class TestAmyStreamConfig:
     """Verify stream activation config controls module construction."""
 
-    def test_disabled_streams_not_instantiated(self):
+    def test_disabled_streams_not_instantiated(self, require_gpu, device):
         """Content and acoustic modules should not exist when disabled."""
         vectors = torch.randn(1024, 8)
         config = {"prosody": True, "content": False, "acoustic": False, "timbre": True}
         model = AmyForProsodyClassification(
             warm_start_vectors=vectors,
             stream_config=config,
-            device="cpu",
+            device=device,
         )
         assert hasattr(model, "prosody_embedding")
         assert hasattr(model, "timbre_projection")
         assert not hasattr(model, "content_embedding")
         assert not hasattr(model, "acoustic_embedding")
 
-    def test_config_key_missing_for_disabled_streams(self):
+    def test_config_key_missing_for_disabled_streams(self, require_gpu, device):
         """Missing keys in config default to False (disabled)."""
         vectors = torch.randn(1024, 8)
         config = {"prosody": True, "timbre": True}
         model = AmyForProsodyClassification(
             warm_start_vectors=vectors,
             stream_config=config,
-            device="cpu",
+            device=device,
         )
         assert hasattr(model, "prosody_embedding")
         assert hasattr(model, "timbre_projection")
         assert not hasattr(model, "content_embedding")
         assert not hasattr(model, "acoustic_embedding")
 
-    def test_config_stored_as_attribute(self):
+    def test_config_stored_as_attribute(self, require_gpu, device):
         """Stream config should be accessible as an attribute."""
         vectors = torch.randn(1024, 8)
         config = {"prosody": True, "content": True, "acoustic": False, "timbre": True}
         model = AmyForProsodyClassification(
             warm_start_vectors=vectors,
             stream_config=config,
-            device="cpu",
+            device=device,
         )
         assert model.stream_config == config
 
 
 class TestAmyTemporalAlignment:
-    """Verify FACodec 80Hz stream aligns to MOSS-Audio ~12.5Hz frames."""
+    """Verify FACodec 80Hz stream aligns to MOSS-Audio ~12.5Hz frames.
+
+    These tests run forward passes and require GPU.
+    """
 
     @pytest.fixture
-    def model(self):
+    def model(self, require_gpu, device):
         vectors = make_prosody_codebook_vectors()
         return AmyForProsodyClassification(
             warm_start_vectors=vectors,
-            device="cpu",
+            device=device,
         )
 
     def test_prosody_pool_matches_semantic_frames(self, model):
@@ -253,7 +270,7 @@ class TestAmyTemporalAlignment:
 
         if P.shape[1] != T_moss:
             P = P.transpose(1, 2)
-            P = torch.nn.functional.adaptive_avg_pool1d(P, T_moss)
+            P = F.adaptive_avg_pool1d(P, T_moss)
             P = P.transpose(1, 2)
 
         assert P.shape[1] == T_moss, (

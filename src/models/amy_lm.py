@@ -122,6 +122,22 @@ class AmyMossLM(PreTrainedModel, GenerationMixin):
         self._apply_freeze(config)
         self.post_init()
 
+        if moss is not None:
+            moss_dtype = next(moss.parameters()).dtype
+            for module in (
+                self.prosody_embedding,
+                self.timbre_projection,
+                self.residual_fusion,
+            ):
+                module.to(dtype=moss_dtype)
+
+    def _init_weights(self, module):
+        """No-op: prevent post_init() from re-initializing pre-trained moss backbone weights.
+
+        All submodules are already initialized — moss backbone via
+        from_pretrained and FACodec modules via their constructors.
+        """
+
     def _add_facodec_modules(self, config: AmyMossLMConfig) -> None:
         self.prosody_embedding = ProsodyEmbedding(
             vocab_size=config.prosody_vocab_size,

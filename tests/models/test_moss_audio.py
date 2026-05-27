@@ -1,19 +1,19 @@
 """Tests for MOSS-Audio backbone integration."""
 
-import pytest
+from __future__ import annotations
+
 import torch
 
 from src.models.moss_audio import MossAudioWrapper
 
 
 class TestMossAudioWrapper:
-    """Tests for MossAudioWrapper model loading and sub-module extraction."""
+    """Tests for MossAudioWrapper model loading and sub-module extraction.
 
-    @pytest.fixture
-    def device(self):
-        return torch.device("cpu")
+    All tests load the 4B MOSS-Audio model and require GPU.
+    """
 
-    def test_init_loads_model_and_extracts_submodules(self, device):
+    def test_init_loads_model_and_extracts_submodules(self, require_gpu, device):
         """Wrapper should load model and expose encoder, adapter, language_model."""
         wrapper = MossAudioWrapper(device=device)
 
@@ -21,7 +21,7 @@ class TestMossAudioWrapper:
         assert wrapper.audio_adapter is not None
         assert wrapper.language_model is not None
 
-    def test_semantic_stream_output_shape(self, device):
+    def test_semantic_stream_output_shape(self, require_gpu, device):
         """Semantic stream should produce [B, T_frames, 2560] from raw audio."""
         wrapper = MossAudioWrapper(device=device)
 
@@ -36,14 +36,14 @@ class TestMossAudioWrapper:
         # 2s audio -> ~200 mel frames (hop=160), then /8 conv downsample -> ~25 frames
         assert 20 <= semantic.shape[1] <= 30
 
-    def test_submodules_are_frozen_by_default(self, device):
+    def test_submodules_are_frozen_by_default(self, require_gpu, device):
         """Audio encoder, adapter, and language model should have no trainable params."""
         wrapper = MossAudioWrapper(device=device)
 
         for name, param in wrapper.named_parameters():
             assert not param.requires_grad, f"{name} should be frozen"
 
-    def test_encode_semantic_different_lengths(self, device):
+    def test_encode_semantic_different_lengths(self, require_gpu, device):
         """Should handle different audio lengths in a batch via padding."""
         wrapper = MossAudioWrapper(device=device)
 
@@ -62,7 +62,7 @@ class TestMossAudioWrapper:
             f"Expected ~3x frames for 3s vs 1s, got {ratio:.2f}"
         )
 
-    def test_encode_semantic_empty_batch(self, device):
+    def test_encode_semantic_empty_batch(self, require_gpu, device):
         """Empty batch should return empty tensor without crashing."""
         wrapper = MossAudioWrapper(device=device)
 
@@ -70,7 +70,7 @@ class TestMossAudioWrapper:
         semantic = wrapper.encode_semantic(audio)
         assert semantic.shape == (0, 0, 2560)
 
-    def test_audio_encoder_output_dim(self, device):
+    def test_audio_encoder_output_dim(self, require_gpu, device):
         """Audio encoder hidden dim should match expected Whisper config."""
         wrapper = MossAudioWrapper(device=device)
         assert hasattr(wrapper.audio_encoder, "config")
@@ -78,7 +78,7 @@ class TestMossAudioWrapper:
         adapter_in_features = wrapper.audio_adapter.gate_proj.in_features
         assert adapter_in_features > 0
 
-    def test_language_model_hidden_size(self, device):
+    def test_language_model_hidden_size(self, require_gpu, device):
         """Qwen3 hidden dim should be 2560 for 4B variant."""
         wrapper = MossAudioWrapper(device=device)
         hidden_size = wrapper.language_model.config.hidden_size
@@ -86,7 +86,7 @@ class TestMossAudioWrapper:
             f"Expected Qwen3 hidden_size=2560, got {hidden_size}"
         )
 
-    def test_adapter_output_dim_matches_llm_input(self, device):
+    def test_adapter_output_dim_matches_llm_input(self, require_gpu, device):
         """Audio adapter output dim must equal Qwen3 hidden dim."""
         wrapper = MossAudioWrapper(device=device)
         adapter_out = wrapper.audio_adapter.down_proj.out_features
@@ -95,7 +95,7 @@ class TestMossAudioWrapper:
             f"Adapter output {adapter_out} != LLM hidden {llm_hidden}"
         )
 
-    def test_encode_semantic_produces_valid_embeddings(self, device):
+    def test_encode_semantic_produces_valid_embeddings(self, require_gpu, device):
         """Output values should be finite and non-zero."""
         wrapper = MossAudioWrapper(device=device)
         audio = torch.randn(1, 16000, device=device)  # 1s audio
@@ -103,7 +103,7 @@ class TestMossAudioWrapper:
         assert torch.isfinite(semantic).all()
         assert not torch.allclose(semantic, torch.zeros_like(semantic), atol=1e-6)
 
-    def test_semantic_frame_rate_is_approximately_12_5_hz(self, device):
+    def test_semantic_frame_rate_is_approximately_12_5_hz(self, require_gpu, device):
         """2 seconds of 16kHz audio should produce ~25 frames (~12.5 Hz)."""
         wrapper = MossAudioWrapper(device=device)
 
@@ -117,7 +117,7 @@ class TestMossAudioWrapper:
             f"Expected ~25 frames for 2s audio (12.5 Hz), got {n_frames}"
         )
 
-    def test_frame_rate_scales_with_duration(self, device):
+    def test_frame_rate_scales_with_duration(self, require_gpu, device):
         """Longer audio should produce proportionally more frames."""
         wrapper = MossAudioWrapper(device=device)
 

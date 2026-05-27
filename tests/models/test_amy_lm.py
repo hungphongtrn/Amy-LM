@@ -8,7 +8,11 @@ from src.models.amy_lm import AmyMossLMConfig, AmyMossLM
 
 
 def _tiny_config(**overrides) -> AmyMossLMConfig:
-    """Minimal config for fast CPU-friendly shape checks."""
+    """Minimal config for fast CPU-friendly shape checks.
+
+    hidden_dim, prosody_vocab_size, and timbre_dim should be set via
+    **overrides to match the tiny language_model dimensions.
+    """
     lang = {
         "vocab_size": 100,
         "hidden_size": 64,
@@ -22,6 +26,7 @@ def _tiny_config(**overrides) -> AmyMossLMConfig:
         "output_dim": 64,
         "encoder_layers": 2,
         "encoder_attention_heads": 2,
+        "deepstack_encoder_layer_indexes": [],
     }
     lang.update(overrides.pop("language_config", {}))
     audio.update(overrides.pop("audio_config", {}))
@@ -216,6 +221,7 @@ class TestAmyMossLMForward:
     @pytest.fixture
     def config(self):
         return _tiny_config(
+            hidden_dim=64,
             prosody_input_rate=80.0,
             prosody_output_rate=12.5,
             prosody_vocab_size=64,
@@ -224,8 +230,8 @@ class TestAmyMossLMForward:
 
     @pytest.fixture
     def model(self, config, require_gpu):
-        m = AmyMossLM(config)
-        return m.to("cuda")
+        config.moss_config.language_config._attn_implementation = "eager"
+        return AmyMossLM(config).to("cuda")
 
     def test_forward_text_only(self, model):
         batch, seq = 1, 5
@@ -238,12 +244,13 @@ class TestAmyMossLMForward:
 
     def test_forward_with_audio(self, model):
         batch, seq = 1, 20
+        n_mels = 160
         input_ids = torch.randint(0, 100, (batch, seq), device="cuda")
         attention_mask = torch.ones(batch, seq, dtype=torch.long, device="cuda")
-        audio_data = torch.randn(batch, 128, 3000, device="cuda")
-        audio_data_seqlens = torch.tensor([3000], dtype=torch.long, device="cuda")
+        audio_data = torch.randn(batch, 128, n_mels, device="cuda")
+        audio_data_seqlens = torch.tensor([n_mels], dtype=torch.long, device="cuda")
         audio_input_mask = torch.zeros(batch, seq, dtype=torch.bool, device="cuda")
-        audio_input_mask[:, :15] = True
+        audio_input_mask[:, :] = True  # ~20 audio tokens from 160 mel frames
 
         with torch.no_grad():
             output = model(
@@ -257,12 +264,13 @@ class TestAmyMossLMForward:
 
     def test_forward_with_prosody(self, model):
         batch, seq = 1, 20
+        n_mels = 160
         input_ids = torch.randint(0, 100, (batch, seq), device="cuda")
         attention_mask = torch.ones(batch, seq, dtype=torch.long, device="cuda")
-        audio_data = torch.randn(batch, 128, 3000, device="cuda")
-        audio_data_seqlens = torch.tensor([3000], dtype=torch.long, device="cuda")
+        audio_data = torch.randn(batch, 128, n_mels, device="cuda")
+        audio_data_seqlens = torch.tensor([n_mels], dtype=torch.long, device="cuda")
         audio_input_mask = torch.zeros(batch, seq, dtype=torch.bool, device="cuda")
-        audio_input_mask[:, :15] = True
+        audio_input_mask[:, :] = True  # ~20 audio tokens
         prosody_indices = torch.randint(0, 64, (batch, 1, 80), device="cuda")
 
         with torch.no_grad():
@@ -278,12 +286,13 @@ class TestAmyMossLMForward:
 
     def test_forward_with_timbre(self, model):
         batch, seq = 1, 20
+        n_mels = 160
         input_ids = torch.randint(0, 100, (batch, seq), device="cuda")
         attention_mask = torch.ones(batch, seq, dtype=torch.long, device="cuda")
-        audio_data = torch.randn(batch, 128, 3000, device="cuda")
-        audio_data_seqlens = torch.tensor([3000], dtype=torch.long, device="cuda")
+        audio_data = torch.randn(batch, 128, n_mels, device="cuda")
+        audio_data_seqlens = torch.tensor([n_mels], dtype=torch.long, device="cuda")
         audio_input_mask = torch.zeros(batch, seq, dtype=torch.bool, device="cuda")
-        audio_input_mask[:, :15] = True
+        audio_input_mask[:, :] = True  # ~20 audio tokens
         timbre_vector = torch.randn(batch, 32, device="cuda")
 
         with torch.no_grad():
@@ -299,12 +308,13 @@ class TestAmyMossLMForward:
 
     def test_forward_with_both_prosody_and_timbre(self, model):
         batch, seq = 1, 20
+        n_mels = 160
         input_ids = torch.randint(0, 100, (batch, seq), device="cuda")
         attention_mask = torch.ones(batch, seq, dtype=torch.long, device="cuda")
-        audio_data = torch.randn(batch, 128, 3000, device="cuda")
-        audio_data_seqlens = torch.tensor([3000], dtype=torch.long, device="cuda")
+        audio_data = torch.randn(batch, 128, n_mels, device="cuda")
+        audio_data_seqlens = torch.tensor([n_mels], dtype=torch.long, device="cuda")
         audio_input_mask = torch.zeros(batch, seq, dtype=torch.bool, device="cuda")
-        audio_input_mask[:, :15] = True
+        audio_input_mask[:, :] = True  # ~20 audio tokens
         prosody_indices = torch.randint(0, 64, (batch, 1, 80), device="cuda")
         timbre_vector = torch.randn(batch, 32, device="cuda")
 
@@ -322,12 +332,13 @@ class TestAmyMossLMForward:
 
     def test_backward_compatible_no_facodec(self, model):
         batch, seq = 1, 15
+        n_mels = 80
         input_ids = torch.randint(0, 100, (batch, seq), device="cuda")
         attention_mask = torch.ones(batch, seq, dtype=torch.long, device="cuda")
-        audio_data = torch.randn(batch, 128, 3000, device="cuda")
-        audio_data_seqlens = torch.tensor([3000], dtype=torch.long, device="cuda")
+        audio_data = torch.randn(batch, 128, n_mels, device="cuda")
+        audio_data_seqlens = torch.tensor([n_mels], dtype=torch.long, device="cuda")
         audio_input_mask = torch.zeros(batch, seq, dtype=torch.bool, device="cuda")
-        audio_input_mask[:, :10] = True
+        audio_input_mask[:, :10] = True  # ~10 audio tokens from 80 mel frames
 
         with torch.no_grad():
             output = model(
@@ -341,12 +352,13 @@ class TestAmyMossLMForward:
 
     def test_gradient_flows_through_facodec(self, model):
         batch, seq = 1, 20
+        n_mels = 160
         input_ids = torch.randint(0, 100, (batch, seq), device="cuda")
         attention_mask = torch.ones(batch, seq, dtype=torch.long, device="cuda")
-        audio_data = torch.randn(batch, 128, 3000, device="cuda")
-        audio_data_seqlens = torch.tensor([3000], dtype=torch.long, device="cuda")
+        audio_data = torch.randn(batch, 128, n_mels, device="cuda")
+        audio_data_seqlens = torch.tensor([n_mels], dtype=torch.long, device="cuda")
         audio_input_mask = torch.zeros(batch, seq, dtype=torch.bool, device="cuda")
-        audio_input_mask[:, :15] = True
+        audio_input_mask[:, :] = True  # ~20 audio tokens
         prosody_indices = torch.randint(0, 64, (batch, 1, 80), device="cuda")
         timbre_vector = torch.randn(batch, 32, device="cuda")
 
@@ -370,12 +382,13 @@ class TestAmyMossLMForward:
 
     def test_frozen_moss_backbone_no_gradients(self, model):
         batch, seq = 1, 20
+        n_mels = 160
         input_ids = torch.randint(0, 100, (batch, seq), device="cuda")
         attention_mask = torch.ones(batch, seq, dtype=torch.long, device="cuda")
-        audio_data = torch.randn(batch, 128, 3000, device="cuda")
-        audio_data_seqlens = torch.tensor([3000], dtype=torch.long, device="cuda")
+        audio_data = torch.randn(batch, 128, n_mels, device="cuda")
+        audio_data_seqlens = torch.tensor([n_mels], dtype=torch.long, device="cuda")
         audio_input_mask = torch.zeros(batch, seq, dtype=torch.bool, device="cuda")
-        audio_input_mask[:, :15] = True
+        audio_input_mask[:, :] = True  # ~20 audio tokens
         prosody_indices = torch.randint(0, 64, (batch, 1, 80), device="cuda")
         timbre_vector = torch.randn(batch, 32, device="cuda")
 

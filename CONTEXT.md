@@ -19,16 +19,16 @@ A third-party factorized neural audio codec (Microsoft, arXiv:2403.03100). Produ
 _Avoid_: FAcodec, FA codec
 
 **MOSS-Audio**:
-An open-source audio understanding model (OpenMOSS, Apache 2.0). 4B variant used as the semantic backbone. Architecture: Whisper-style audio encoder → GatedMLP adapter → Qwen3 language model (hidden dim 2560). Two usage modes: (1) sub-module extraction for classification probes (issue #8), (2) full generative `MossAudioModel` forward-path inheritable by AmyLM for DPO training (issue #14).
+An open-source audio understanding model (OpenMOSS, Apache 2.0). 4B variant used as the semantic backbone. Architecture: Whisper-style audio encoder → GatedMLP adapter → Qwen3 language model (hidden dim 2560). Source vendored as `src/models/moss_audio_model.py` (copied from `vendor/MOSS-Audio/src/`) to enable Liger kernel patching and flash attention config without vendor path dependencies. Composed as `self.moss` in **AmyMossLM**, not inherited.
 _Avoid_: MOSS, audio model, backbone
 
 **Amy Classifier Head**:
 The issue #8 pilot model: `AmyForProsodyClassification`. Wraps MOSS-Audio sub-modules with FACodec embedding tables and a classification head. Forward path: audio encoder → audio adapter → ResidualFusion(prosody stream) → Qwen3 language model → mean-pool frames → Linear(2560→2). No text tokens, no DeepStack, no LM head. Trained with CrossEntropyLoss for binary sarcasm classification.
 _Avoid_: classification wrapper, downstream model
 
-**AmyLM**:
-The HF-compatible Speech Language Model (issue #14). Inherits `MossAudioModel` directly, adding `ProsodyEmbedding`, `TimbreProjection`, `TemporalPool`, and `ResidualFusion` as permanent architecture modules. Overrides `forward()` to enrich audio embeddings with prosody/timbre before the `<audio>` placeholder-replacement step, then passes to Qwen3 for autoregressive text generation. Supports `save_pretrained`/`from_pretrained`/`generate()` and HF `DPOTrainer` integration. Trainable components: FACodec embedding projector, timbre projection, λ gates. Backbone (audio encoder, audio adapter, Qwen3) frozen by default — LoRA optionally applied for ablation.
-_Avoid_: classifier, wrapper model (it is a full model, not a wrapper)
+**AmyMossLM**:
+The HF-compatible Speech Language Model (issues #14, #26). A standalone `PreTrainedModel` + `GenerationMixin` that **composes** (HAS-A) a `MossAudioModel` as `self.moss`, adding `ProsodyEmbedding`, `TimbreProjection`, `TemporalPool`, and `ResidualFusion` as sibling attributes. Forward delegates backbone work to `self.moss` methods (`get_audio_features`, `audio_adapter`, `language_model`, `lm_head`, `_register_llm_deepstack_hooks`) while injecting FACodec enrichment between `audio_adapter` and `masked_scatter_`. Supports `save_pretrained`/`from_pretrained`/`generate()` and HF `DPOTrainer` integration. Base checkpoint bootstrapped via `prepare_base_checkpoint()`: loads MossAudio weights, wraps them in `self.moss` (getting `moss.*` key prefix naturally via PyTorch child naming), saves full model to `hungphongtrn/amy-moss-lm-base` on HF Hub. Trainable components: FACodec embedding projector, timbre projection, λ gates. Backbone frozen by default — LoRA applied via `target_modules` regex scoped to `moss.*` prefix.
+_Avoid_: AmyLM (replaced by AmyMossLM), wrapper model, `__class__` mutation, `_upgrade_from_moss`
 
 ### Architecture Concepts
 
@@ -168,8 +168,9 @@ _Avoid_: Ablation grid, experiment table
 ## Relationships
 
 - **Amy LM** uses **MOSS-Audio** as its semantic backbone and **FACodec** for optional Prosody, Content, Acoustic, and Timbre streams
-- **AmyLM** (HF model class) inherits **MossAudioModel**, adding FACodec enrichment modules as permanent architecture
-- **Amy Classifier Head** is the issue #8 classification probe; **AmyLM** is the issue #14 generative model — distinct models with different forward paths
+- **AmyMossLM** (HF model class) **composes** **MossAudioModel** as `self.moss`, adding FACodec enrichment modules as sibling attributes — no inheritance, no `__class__` mutation
+- **AmyMossLM** lives alongside **MossAudioModel** source in `src/models/` (no vendor path dependency at runtime); Liger kernel applied globally via `apply_liger_kernel_to_qwen3()` before model construction; flash attention configured via `language_config._attn_implementation`
+- **Amy Classifier Head** is the issue #8 classification probe; **AmyMossLM** is the issue #14/26 generative model — distinct models with different forward paths
 - **FACodec** substitutes for **Amy Codec** during pilot validation
 - **Semantic Stream**, **Prosody Stream**, **Acoustic Stream**, and **FACodec Content Stream** are fused via **Residual Summation** at 12.5 Hz; each has an independent learnable gate
 - **Stream Activation Config** controls which streams are built and fused; disabled streams are excluded from both module instantiation and forward()
@@ -181,13 +182,14 @@ _Avoid_: Ablation grid, experiment table
 - **Projection Architecture** and **Extension Architecture** are competing hypotheses for how to represent speech in LLMs
 - **Social Deafness** is the problem; **Hypothesis Matrix** is the evaluation framework
 - **Preference Pairs** are constructed by an external LLM from **NVTTS** speech, then encoded through the **FACodec** preprocessing pipeline to produce the **NVTTS-FACodec Dataset** before **DPO** training
-- **DPO** trains **AmyLM** via **AmyDPOTrainer** (subclass of `trl.DPOTrainer`), computing per-token log-probabilities of chosen vs. rejected responses on Qwen3's full vocabulary
+- **DPO** trains **AmyMossLM** via **AmyDPOTrainer** (subclass of `trl.DPOTrainer`), computing per-token log-probabilities of chosen vs. rejected responses on Qwen3's full vocabulary
 - **DPOCollator** produces batches from **NVTTS-FACodec Dataset** rows; **AmyDPOTrainer** uses **Concatenated Forward (AmyLM DPO)** to pass shared audio/prosody/timbre through duplicated batch dimension
-- **DPO Reference Model** is a frozen **AmyLM** snapshot at step 0; λ=0 makes it functionally equivalent to **MOSS-Audio** at training start
-- **QLoRA (DPO)** freezes the 4-bit **MOSS-Audio** backbone and trains LoRA adapters + full-precision FACodec modules
+- **DPO Reference Model** is a frozen **AmyMossLM** snapshot at step 0; λ=0 makes it functionally equivalent to **MOSS-Audio** at training start
+- **QLoRA (DPO)** freezes the 4-bit **MOSS-Audio** backbone and trains LoRA adapters + full-precision FACodec modules; LoRA `target_modules` uses regex scoped to `moss.*` prefix to avoid touching FACodec linear layers
 - **NVTTS-FACodec DPO Split** applies cosine similarity filter to the full **NVTTS-FACodec Dataset** while preserving original train/dev/test splits
 - **DPO System Prompt** is uniform across all samples; the model receives no sample-specific text cues
 - **LLM-as-Judge** evaluates **Social Deafness** improvement by comparing pre/post **DPO** response appropriateness on held-out samples
+- **AmyMossLM Base Checkpoint** (`hungphongtrn/amy-moss-lm-base`): One-time bootstrap through `AmyMossLM.prepare_base_checkpoint()` — loads MossAudio model weights, wraps in `self.moss` composition, zero-inits FACodec modules, saves full safetensors + processor to HF Hub. Subsequent training uses `AmyMossLM.from_pretrained("hungphongtrn/amy-moss-lm-base")`.
 
 ## Example dialogue
 
