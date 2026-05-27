@@ -19,7 +19,7 @@ class MockResidualFusion(nn.Module):
         self.lambda_t = nn.Parameter(torch.tensor(0.0))
 
 
-class MockAmyLM(nn.Module):
+class MockAmyMossLM(nn.Module):
     def __init__(self):
         super().__init__()
         self.residual_fusion = MockResidualFusion()
@@ -46,13 +46,13 @@ def test_precompute_ref_log_probs_required(monkeypatch):
 
     config = DPOConfig(output_dir="./tmp", precompute_ref_log_probs=False)
     with pytest.raises(ValueError, match="precompute_ref_log_probs=True"):
-        AmyDPOTrainer(model=MockAmyLM(), args=config)
+        AmyDPOTrainer(model=MockAmyMossLM(), args=config)
 
 
 def test_default_config_sets_precompute(monkeypatch):
     monkeypatch.setattr(DPOTrainer, "__init__", _stub_dpo_init)
 
-    trainer = AmyDPOTrainer(model=MockAmyLM())
+    trainer = AmyDPOTrainer(model=MockAmyMossLM())
     assert trainer.args.precompute_ref_log_probs is True
 
 
@@ -60,7 +60,7 @@ def test_lambda_logging(monkeypatch):
     monkeypatch.setattr(DPOTrainer, "__init__", _stub_dpo_init)
     monkeypatch.setattr(DPOTrainer, "log", lambda self, logs, *args, **kwargs: None)
 
-    model = MockAmyLM()
+    model = MockAmyMossLM()
     model.residual_fusion.lambda_p.data = torch.tensor(0.5)
     model.residual_fusion.lambda_t.data = torch.tensor(0.3)
 

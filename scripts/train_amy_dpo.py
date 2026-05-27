@@ -39,8 +39,9 @@ _VENDOR_SRC = os.path.abspath(
 if _VENDOR_SRC not in sys.path:
     sys.path.insert(0, _VENDOR_SRC)
 
+from modeling_moss_audio import MossAudioModel
 from processing_moss_audio import MossAudioProcessor
-from models.amy_lm import AmyLM, AmyLMConfig
+from models.amy_lm import AmyMossLM, AmyMossLMConfig
 from training.amy_dpo_trainer import AmyDPOTrainer
 from training.config import DPOTrainingConfig, register_config_arg, resolve_config
 from training.dpo_collator import DPOCollator
@@ -148,19 +149,29 @@ def load_and_filter_dataset(dataset_id: str, cosine_threshold: float, num_sample
 
 
 def init_model(config: DPOTrainingConfig):
-    """Initialize AmyLM."""
-    amy_config = AmyLMConfig.from_pretrained(config.model, trust_remote_code=True)
-    amy_config.freeze_audio_encoder = True
-    amy_config.freeze_audio_adapter = True
-    amy_config.freeze_llm = True
+    """Initialize AmyMossLM with 4-bit quantized backbone via constructor injection.
 
-    model = AmyLM.from_pretrained(
+    Loads MossAudioModel (backbone only) with load_in_4bit=True, then
+    wraps in AmyMossLM composition via AmyMossLM(config, moss=moss_4bit).
+    No __class__ mutation, no _upgrade_from_moss hack.
+
+    LoRA is scoped to MossAudioModel backbone only via target_modules regex
+    (^moss\..*), leaving FACodec modules fully trainable at full precision.
+    """
+    moss = MossAudioModel.from_pretrained(
         config.model,
-        config=amy_config,
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
+        load_in_4bit=True,
     )
+    amy_config = AmyMossLMConfig(
+        moss_config=moss.config,
+        freeze_audio_encoder=True,
+        freeze_audio_adapter=True,
+        freeze_llm=True,
+    )
+    model = AmyMossLM(amy_config, moss=moss)
 
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total = sum(p.numel() for p in model.parameters())
@@ -170,7 +181,7 @@ def init_model(config: DPOTrainingConfig):
         r=config.lora_r,
         lora_alpha=config.lora_alpha,
         lora_dropout=config.lora_dropout,
-        target_modules="all-linear",
+        target_modules=r"^moss\..*\.(q_proj|k_proj|v_proj|o_proj|up_proj|down_proj|gate_proj)$",
         bias="none",
         task_type=TaskType.CAUSAL_LM,
     )
