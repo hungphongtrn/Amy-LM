@@ -4,7 +4,9 @@ from .pooling import TemporalPool
 from .fusion import ResidualFusion
 from .moss_audio_model import MossAudioConfig, MossAudioModel
 from .moss_audio import MossAudioWrapper
-from .amy_lm import AmyLMConfig, AmyLM
+from .amy_lm import AmyMossLMConfig, AmyMossLM
+from .amy_classifier import AmyForProsodyClassification
+from .baseline_classifier import BaselineClassifier
 
 __all__ = [
     "ProsodyEmbedding",
@@ -18,18 +20,6 @@ __all__ = [
     "MossAudioWrapper",
     "AmyForProsodyClassification",
     "BaselineClassifier",
-    "AmyLMConfig",
-    "AmyLM",
+    "AmyMossLMConfig",
+    "AmyMossLM",
 ]
-
-
-def __getattr__(name: str):
-    if name == "AmyForProsodyClassification":
-        from .amy_classifier import AmyForProsodyClassification
-
-        return AmyForProsodyClassification
-    if name == "BaselineClassifier":
-        from .baseline_classifier import BaselineClassifier
-
-        return BaselineClassifier
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
