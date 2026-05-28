@@ -18,8 +18,8 @@ import sys
 from pathlib import Path
 
 from huggingface_hub import login, snapshot_download
+from huggingface_hub.utils import get_token
 
-HF_TOKEN = os.getenv("HF_TOKEN", "")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 ASSETS = {
@@ -45,11 +45,18 @@ def check_assets() -> dict[str, bool]:
 
 
 def download_assets() -> None:
-    if HF_TOKEN:
-        login(token=HF_TOKEN)
-        print(f"HF authenticated as: ...{HF_TOKEN[-6:]}")
+    token = get_token()
+    if not token:
+        # Try env as fallback
+        env_token = os.getenv("HF_TOKEN", "")
+        if env_token:
+            login(token=env_token)
+            token = get_token()
+
+    if token:
+        print(f"HF authenticated")
     else:
-        print("WARNING: HF_TOKEN not set. Downloads may fail for gated repos.")
+        print("WARNING: No HF token found. Run 'hf auth login' or set HF_TOKEN.")
 
     for name, asset in ASSETS.items():
         local = asset["local"]
