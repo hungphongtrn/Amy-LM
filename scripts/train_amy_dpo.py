@@ -84,6 +84,12 @@ def parse_config(raw_args: list[str] | None = None) -> DPOTrainingConfig:
 
     # Training
     parser.add_argument("--beta", type=float, default=DPOTrainingConfig.beta, help="DPO beta")
+    parser.add_argument(
+        "--precompute-ref-batch-size",
+        type=int,
+        default=DPOTrainingConfig.precompute_ref_batch_size,
+        help="Batch size for reference log-prob precomputation (None = use training batch size)",
+    )
     parser.add_argument("--learning-rate", type=float, default=DPOTrainingConfig.learning_rate, help="Learning rate")
     parser.add_argument("--warmup-ratio", type=float, default=DPOTrainingConfig.warmup_ratio, help="Warmup ratio")
     parser.add_argument("--num-epochs", type=float, default=DPOTrainingConfig.num_epochs, help="Training epochs")
@@ -227,6 +233,7 @@ def build_dpo_config(config: DPOTrainingConfig) -> DPOConfig:
         bf16=True,
         gradient_checkpointing=config.gradient_checkpointing,
         gradient_checkpointing_kwargs=gc_kwargs if gc_kwargs else {},
+        precompute_ref_batch_size=config.precompute_ref_batch_size,
         loss_type=["sigmoid"],
         logging_steps=config.logging_steps,
         save_steps=config.save_steps,

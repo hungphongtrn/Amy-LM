@@ -13,10 +13,13 @@ lora_dropout: 0.05                       # Light regularization
 # ── DPO ─────────────────────────────────────────────────────────────────────
 beta: 0.1                                # Standard DPO temperature
 
+precompute_ref_batch_size: 4              # Larger batch for ref precomputation (no gradients, fits 12GB)
+                                          # Speeds up the ~35-min ref log-prob precompute by 4×
+
 # ── Optimization (VRAM-tuned) ───────────────────────────────────────────────
-learning_rate: 5.0e-5                    # Conservative LR for QLoRA
+learning_rate: 1e-4                    # Conservative LR for QLoRA
 warmup_ratio: 0.1                        # Linear warmup over first 10% of steps
-max_length: 1024                         # Sequence length — critical VRAM lever
+max_length: 512                         # Sequence length — critical VRAM lever
                                           # 1024 fits ~8s audio + prompt comfortably on 12GB
                                           # If OOM, reduce to 768 or 512 first
 per_device_batch_size: 1                 # Single sample per step (VRAM)
@@ -28,11 +31,11 @@ max_grad_norm: 1.0                       # Gradient clipping
 # ── Logging & Checkpointing ─────────────────────────────────────────────────
 output_dir: ./output/amy_dpo_rtx3060
 logging_steps: 10
-save_steps: 500
-eval_steps: 500
+save_steps: 100
+eval_steps: 100
 save_total_limit: 3
 wandb_project: amy-lm-dpo
-wandb_run_name: null
+wandb_run_name: lora_r16_a32_512_length
 no_wandb: false
 
 seed: 42

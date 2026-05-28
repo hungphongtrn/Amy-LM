@@ -32,6 +32,7 @@ class DPOTrainingConfig:
 
     # ── DPO ─────────────────────────────────────────────────────────────
     beta: float = 0.1
+    precompute_ref_batch_size: int | None = None  # Larger batch for ref log-prob precomputation (None = use training batch)
 
     # ── Optimization ────────────────────────────────────────────────────
     learning_rate: float = 5.0e-5

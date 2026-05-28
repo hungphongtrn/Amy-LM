@@ -19,8 +19,10 @@ lora_dropout: 0.05                                 # LoRA dropout for regulariza
 
 # ── DPO ─────────────────────────────────────────────────────────────────────
 beta: 0.1                                          # DPO temperature — controls divergence from reference
-                                                   # Lower = stronger preference signal, risk of overfitting
-                                                   # Higher = closer to reference, more conservative
+                                                    # Lower = stronger preference signal, risk of overfitting
+                                                    # Higher = closer to reference, more conservative
+
+precompute_ref_batch_size: null                     # Batch size for ref log-prob precomputation (null = use per_device_batch_size)
 
 # ── Optimization ────────────────────────────────────────────────────────────
 learning_rate: 5.0e-5                              # Peak LR (cosine schedule to 0); 5e-5 is standard for QLoRA

@@ -13,6 +13,8 @@ lora_dropout: 0.0                        # No dropout for deterministic debug
 # ── DPO ─────────────────────────────────────────────────────────────────────
 beta: 0.5                                # Higher beta → weaker preference signal; stable for debug
 
+precompute_ref_batch_size: null           # Use training batch size for ref precomputation
+
 # ── Optimization ────────────────────────────────────────────────────────────
 learning_rate: 1.0e-4                    # Higher LR for faster convergence in debug
 warmup_ratio: 0.0                        # No warmup
