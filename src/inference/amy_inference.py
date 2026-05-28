@@ -57,15 +57,11 @@ class AmyInference:
         prosody_indices: torch.Tensor,
         timbre_vector: torch.Tensor,
     ) -> torch.Tensor:
-        semantic = self.model.wrapper.encode_semantic(audio.to(self.device))
-        t_moss = semantic.shape[1]
-        p_emb = self.model.prosody_embedding(prosody_indices.to(self.device))
-        p_stream = self.model.temporal_pool(p_emb)
-        if p_stream.shape[1] != t_moss:
-            p_stream = F.adaptive_avg_pool1d(p_stream.transpose(1, 2), t_moss).transpose(1, 2)
-        t_proj = self.model.timbre_projection(timbre_vector.to(self.device))
-        t_stream = t_proj.unsqueeze(1).expand(-1, t_moss, -1)
-        return self.model.fusion(semantic, prosody=p_stream, timbre=t_stream, content=None, acoustic=None)
+        return self.model.amy_moss.encode_enriched_audio_embeds(
+            audio.to(self.device),
+            prosody_indices=prosody_indices.to(self.device),
+            timbre_vector=timbre_vector.to(self.device),
+        )
 
     def _assemble_inputs(self, fused_h: torch.Tensor, instruction: str) -> tuple[torch.Tensor, torch.Tensor]:
         chat = [{"role": "user", "content": instruction}]

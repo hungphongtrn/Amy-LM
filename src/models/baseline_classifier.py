@@ -5,64 +5,72 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from .moss_audio import MossAudioWrapper
+from .amy_lm import AmyMossLM, AmyMossLMConfig
+from .moss_audio_model import MossAudioModel
 
 
 class BaselineClassifier(nn.Module):
     """MOSS-Audio semantic encoder + Qwen3 language model + mean-pool + Linear classifier.
 
-    Frozen MOSS-Audio backbone. Trainable: Linear(2560->2) classifier head.
-    No FACodec streams. Used as the baseline for measuring prosody/timbre contribution.
+    Composes (HAS-A) an AmyMossLM (with no FACodec enrichment).
+    Frozen MOSS-Audio backbone. Trainable: LayerNorm + Linear(2560->2) classifier head.
+    Used as the baseline for measuring prosody/timbre contribution.
     """
 
     def __init__(
         self,
         moss_model_id: str = "OpenMOSS-Team/MOSS-Audio-4B-Thinking",
         device: torch.device | str | None = None,
+        torch_dtype: torch.dtype = torch.bfloat16,
+        load_in_4bit: bool = False,
         num_classes: int = 2,
         hidden_dim: int = 2560,
         gradient_checkpointing: bool = False,
     ) -> None:
         super().__init__()
-        self.device = torch.device(device) if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.hidden_dim = hidden_dim
-        self.num_classes = num_classes
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._device = torch.device(device)
 
-        self.wrapper = MossAudioWrapper(model_id=moss_model_id, device=self.device)
-        self.norm = nn.LayerNorm(hidden_dim)
-        self.classifier = nn.Linear(hidden_dim, num_classes)
+        from_pretrained_kwargs: dict = {
+            "trust_remote_code": True,
+        }
+        if load_in_4bit:
+            from transformers import BitsAndBytesConfig
+            from_pretrained_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch_dtype,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+            )
+        else:
+            from_pretrained_kwargs["torch_dtype"] = torch_dtype
+        if self._device.type == "cuda":
+            from_pretrained_kwargs["device_map"] = str(self._device)
 
-        self._freeze_backbone()
-        self._ensure_head_trainable()
+        moss = MossAudioModel.from_pretrained(moss_model_id, **from_pretrained_kwargs)
+        moss.eval()
 
-        self.to(self.device)
+        amy_config = AmyMossLMConfig(moss_config=moss.config)
+        self.amy_moss = AmyMossLM(amy_config, moss=moss)
+
+        backbone_device = next(self.amy_moss.parameters()).device
+        self.norm = nn.LayerNorm(hidden_dim, device=backbone_device)
+        self.classifier = nn.Linear(hidden_dim, num_classes, device=backbone_device)
 
         if gradient_checkpointing:
-            self.get_language_model().gradient_checkpointing_enable()
-
-    def _freeze_backbone(self) -> None:
-        for param in self.wrapper.parameters():
-            param.requires_grad = False
-
-    def _ensure_head_trainable(self) -> None:
-        for name, module in self.named_children():
-            if name in ("wrapper",):
-                continue
-            for param in module.parameters():
-                param.requires_grad = True
+            self.amy_moss.moss.language_model.gradient_checkpointing_enable()
 
     def get_language_model(self) -> nn.Module:
-        return self.wrapper.language_model
+        return self.amy_moss.moss.language_model
 
     def forward(self, audio: torch.Tensor) -> torch.Tensor:
-        with torch.no_grad():
-            semantic = self.wrapper.encode_semantic(audio)
-        semantic = self.norm(semantic)
+        H = self.amy_moss.encode_enriched_audio_embeds(audio)
+        H = self.norm(H)
 
         language_model = self.get_language_model()
         lm_dtype = next(language_model.parameters()).dtype
-        h_lm = semantic.to(dtype=lm_dtype)
-        lm_out = language_model(inputs_embeds=h_lm).last_hidden_state
+        lm_out = language_model(inputs_embeds=H.to(dtype=lm_dtype)).last_hidden_state
 
         pooled = lm_out.mean(dim=1)
         logits = self.classifier(pooled)

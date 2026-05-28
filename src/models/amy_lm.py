@@ -11,6 +11,8 @@ Issue #26.
 
 from __future__ import annotations
 
+import os
+import sys
 from typing import Any, List, Optional, Tuple, Union
 
 import torch
@@ -25,6 +27,14 @@ from .moss_audio_model import MossAudioConfig, MossAudioModel
 from .embedding import ProsodyEmbedding, TimbreProjection
 from .pooling import TemporalPool
 from .fusion import ResidualFusion
+
+_VENDOR_SRC = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "vendor", "MOSS-Audio", "src")
+)
+if os.path.isdir(_VENDOR_SRC) and _VENDOR_SRC not in sys.path:
+    sys.path.insert(0, _VENDOR_SRC)
+
+from processing_moss_audio import MossAudioProcessor  # noqa: E402
 
 
 class AmyMossLMConfig(PretrainedConfig):
@@ -44,6 +54,7 @@ class AmyMossLMConfig(PretrainedConfig):
         prosody_init_std: float = 0.02,
         prosody_input_rate: float = 80.0,
         prosody_output_rate: float = 12.5,
+        prosody_warm_start_vectors_path: str | None = None,
         timbre_dim: int = 256,
         hidden_dim: int = 2560,
         freeze_audio_encoder: bool = True,
@@ -56,6 +67,7 @@ class AmyMossLMConfig(PretrainedConfig):
         self.prosody_init_std = prosody_init_std
         self.prosody_input_rate = prosody_input_rate
         self.prosody_output_rate = prosody_output_rate
+        self.prosody_warm_start_vectors_path = prosody_warm_start_vectors_path
         self.timbre_dim = timbre_dim
         self.hidden_dim = hidden_dim
         self.freeze_audio_encoder = freeze_audio_encoder
@@ -85,6 +97,7 @@ class AmyMossLMConfig(PretrainedConfig):
         output["prosody_init_std"] = self.prosody_init_std
         output["prosody_input_rate"] = self.prosody_input_rate
         output["prosody_output_rate"] = self.prosody_output_rate
+        output["prosody_warm_start_vectors_path"] = self.prosody_warm_start_vectors_path
         output["timbre_dim"] = self.timbre_dim
         output["hidden_dim"] = self.hidden_dim
         output["freeze_audio_encoder"] = self.freeze_audio_encoder
@@ -139,11 +152,19 @@ class AmyMossLM(PreTrainedModel, GenerationMixin):
         """
 
     def _add_facodec_modules(self, config: AmyMossLMConfig) -> None:
+        from .codebook_utils import load_prosody_codebook_vectors
+
+        warm_start_vectors = None
+        init_strategy = config.prosody_init_strategy
+        if config.prosody_warm_start_vectors_path is not None:
+            warm_start_vectors = load_prosody_codebook_vectors(config.prosody_warm_start_vectors_path)
+            init_strategy = "warm_start"
         self.prosody_embedding = ProsodyEmbedding(
             vocab_size=config.prosody_vocab_size,
             embed_dim=config.hidden_dim,
-            init_strategy=config.prosody_init_strategy,
+            init_strategy=init_strategy,
             init_std=config.prosody_init_std,
+            warm_start_vectors=warm_start_vectors,
         )
         self.timbre_projection = TimbreProjection(
             timbre_dim=config.timbre_dim,
@@ -178,7 +199,7 @@ class AmyMossLM(PreTrainedModel, GenerationMixin):
     def set_output_embeddings(self, new_embeddings):
         self.moss.set_output_embeddings(new_embeddings)
 
-    def _enrich_audio_embeds(
+    def enrich_audio_embeds(
         self,
         audio_embeds: torch.Tensor,
         prosody_indices: Optional[torch.Tensor] = None,
@@ -226,6 +247,61 @@ class AmyMossLM(PreTrainedModel, GenerationMixin):
             content=None,
             acoustic=None,
             timbre=streams.get("timbre"),
+        )
+
+    @torch.no_grad()
+    def encode_enriched_audio_embeds(
+        self,
+        audio: torch.Tensor,
+        prosody_indices: Optional[torch.Tensor] = None,
+        timbre_vector: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Encode raw waveform to enriched audio embeddings.
+
+        Mel extraction + audio encoder + audio adapter + FACodec enrichment.
+        Frozen backbone. Used by classifier probing without token/text paths.
+
+        Args:
+            audio: Raw waveform [B, T_audio] at 16 kHz.
+            prosody_indices: Optional prosody VQ indices [B, 1, T80].
+            timbre_vector: Optional timbre vector [B, 256].
+
+        Returns:
+            Enriched embeddings [B, T_moss, 2560] at ~12.5 Hz.
+        """
+        device = next(self.moss.parameters()).device
+        dtype = next(self.moss.parameters()).dtype
+        audio = audio.to(device)
+        if audio.dim() != 2:
+            raise ValueError(f"Expected audio shape [B, T_audio], got {tuple(audio.shape)}")
+        if audio.shape[0] == 0:
+            return torch.empty(0, 0, self.config.hidden_dim, device=device, dtype=dtype)
+
+        processor = MossAudioProcessor.from_pretrained(
+            self.config.moss_config._name_or_path,
+            trust_remote_code=True,
+            enable_time_marker=True,
+        )
+
+        mels = [processor._extract_mel(audio[i].detach().cpu()) for i in range(audio.shape[0])]
+        seqlens = torch.tensor([mel.shape[-1] for mel in mels], dtype=torch.long)
+        max_len = int(seqlens.max().item())
+        audio_data = torch.zeros(
+            (len(mels), mels[0].shape[0], max_len),
+            dtype=dtype,
+        )
+        for idx, mel in enumerate(mels):
+            audio_data[idx, :, : mel.shape[-1]] = mel.to(dtype=dtype)
+        audio_data = audio_data.to(device)
+        audio_data_seqlens = seqlens.to(device)
+
+        audio_embeds, _ = self.moss.get_audio_features(audio_data, audio_data_seqlens)
+        audio_embeds = self.moss.audio_adapter(audio_embeds)
+
+        return self.enrich_audio_embeds(
+            audio_embeds,
+            prosody_indices=prosody_indices.to(device) if prosody_indices is not None else None,
+            timbre_vector=timbre_vector.to(device) if timbre_vector is not None else None,
         )
 
     def forward(
@@ -303,7 +379,7 @@ class AmyMossLM(PreTrainedModel, GenerationMixin):
             )
             audio_embeds = self.moss.audio_adapter(audio_embeds)
 
-            audio_embeds = self._enrich_audio_embeds(
+            audio_embeds = self.enrich_audio_embeds(
                 audio_embeds,
                 prosody_indices=prosody_indices,
                 timbre_vector=timbre_vector.to(dtype=inputs_embeds.dtype)
@@ -436,6 +512,53 @@ class AmyMossLM(PreTrainedModel, GenerationMixin):
         )
 
         return model_inputs
+
+    @torch.no_grad()
+    def _warm_start_prosody(self, vectors: torch.Tensor):
+        """Replace prosody_embedding with warm-started version (in-place).
+
+        Used when warm-start vectors are provided as a tensor rather than a file path.
+        """
+        from .embedding import ProsodyEmbedding
+        device = next(self.parameters()).device
+        dtype = next(self.parameters()).dtype
+        new_embedding = ProsodyEmbedding(
+            vocab_size=self.config.prosody_vocab_size,
+            embed_dim=self.config.hidden_dim,
+            init_strategy="warm_start",
+            warm_start_vectors=vectors,
+        ).to(device=device, dtype=dtype)
+        self.prosody_embedding = new_embedding
+
+    FACODEC_PREFIXES = (
+        "prosody_embedding.",
+        "timbre_projection.",
+        "temporal_pool.",
+        "residual_fusion.",
+    )
+
+    @property
+    def moss_model_id(self) -> str:
+        return self.config.moss_config._name_or_path
+
+    def facodec_state_dict(self) -> dict[str, torch.Tensor]:
+        """Return FACodec module weights for cross-task transfer (e.g. MUStARD → DPO)."""
+        state = self.state_dict()
+        return {k: v for k, v in state.items() if k.startswith(self.FACODEC_PREFIXES)}
+
+    def load_facodec_state_dict(
+        self, state_dict: dict[str, torch.Tensor], strict: bool = False
+    ):
+        """Load FACodec module weights from a classifier checkpoint.
+
+        Strips `amy_moss.` prefix if present (from classifier-owned AmyMossLM checkpoints).
+        """
+        normalized = {}
+        for k, v in state_dict.items():
+            key = k.removeprefix("amy_moss.")
+            if key.startswith(self.FACODEC_PREFIXES) and "moss." not in key:
+                normalized[key] = v
+        return self.load_state_dict(normalized, strict=strict)
 
     @classmethod
     def prepare_base_checkpoint(

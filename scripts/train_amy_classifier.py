@@ -20,7 +20,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.data.mustard_dataset import collate_mustard, create_mustard_splits
 from src.models import AmyForProsodyClassification, BaselineClassifier
-from src.models.codebook_utils import load_prosody_codebook_vectors
 from src.training.trainer import AmyTrainer
 
 
@@ -129,9 +128,8 @@ def main():
             gradient_checkpointing=args.grad_checkpoint,
         )
     else:
-        vectors = load_prosody_codebook_vectors(args.facodec_checkpoint)
         model = AmyForProsodyClassification(
-            warm_start_vectors=vectors,
+            prosody_warm_start_vectors_path=args.facodec_checkpoint,
             device=device,
             gradient_checkpointing=args.grad_checkpoint,
         )

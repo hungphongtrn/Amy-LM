@@ -23,7 +23,7 @@ An open-source audio understanding model (OpenMOSS, Apache 2.0). 4B variant used
 _Avoid_: MOSS, audio model, backbone
 
 **Amy Classifier Head**:
-The issue #8 pilot model: `AmyForProsodyClassification`. Wraps MOSS-Audio sub-modules with FACodec embedding tables and a classification head. Forward path: audio encoder → audio adapter → ResidualFusion(prosody stream) → Qwen3 language model → mean-pool frames → Linear(2560→2). No text tokens, no DeepStack, no LM head. Trained with CrossEntropyLoss for binary sarcasm classification.
+The issue #8 pilot model: `AmyForProsodyClassification`. Composes (HAS-A) an `AmyMossLM` as `self.amy_moss` for audio encoding and FACodec enrichment, with a classification head on top. Forward path: `amy_moss.encode_enriched_audio_embeds()` → Qwen3 language model → mean-pool frames → Linear(2560→2). No text tokens, no DeepStack, no LM head. Trained with CrossEntropyLoss for binary sarcasm classification. FACodec modules owned by `self.amy_moss` (no duplicate modules).
 _Avoid_: classification wrapper, downstream model
 
 **AmyMossLM**:

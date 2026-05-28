@@ -159,9 +159,10 @@ class AmyTrainer:
         """Return lambda values for Amy model; empty for baseline."""
         if self.is_baseline:
             return {}
+        fusion = self.model.amy_moss.residual_fusion
         return {
-            "lambda_p": self.model.fusion.lambda_p.item(),
-            "lambda_t": self.model.fusion.lambda_t.item(),
+            "lambda_p": fusion.lambda_p.item(),
+            "lambda_t": fusion.lambda_t.item(),
         }
 
     def save_checkpoint(self, path: str) -> None:
@@ -169,11 +170,13 @@ class AmyTrainer:
         model_state = {
             k: v
             for k, v in self.model.state_dict().items()
-            if not k.startswith("wrapper.")
+            if not k.startswith("amy_moss.moss.")
         }
+        facodec_state = self.model.amy_moss.facodec_state_dict() if not self.is_baseline else {}
         torch.save(
             {
                 "model_state_dict": model_state,
+                "facodec_state_dict": facodec_state,
                 "optimizer_state_dict": self.optimizer.state_dict(),
                 "epoch": self.current_epoch,
                 "is_baseline": self.is_baseline,
@@ -185,11 +188,11 @@ class AmyTrainer:
         """Load model, optimizer, and epoch state."""
         ckpt = torch.load(path, map_location=self.device, weights_only=True)
         incompatible = self.model.load_state_dict(ckpt["model_state_dict"], strict=False)
-        unexpected = [k for k in incompatible.unexpected_keys if not k.startswith("wrapper.")]
-        missing = [k for k in incompatible.missing_keys if not k.startswith("wrapper.")]
+        unexpected = [k for k in incompatible.unexpected_keys if not k.startswith("amy_moss.moss.")]
+        missing = [k for k in incompatible.missing_keys if not k.startswith("amy_moss.moss.")]
         if unexpected or missing:
             raise RuntimeError(
-                "Checkpoint/model mismatch after filtering frozen wrapper keys. "
+                "Checkpoint/model mismatch after filtering frozen backbone keys. "
                 f"unexpected={unexpected}, missing={missing}"
             )
         self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])

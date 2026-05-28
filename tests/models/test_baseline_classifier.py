@@ -45,7 +45,7 @@ class TestBaselineFreeze:
         return BaselineClassifier(device=device)
 
     def test_backbone_fully_frozen(self, model):
-        for name, param in model.wrapper.named_parameters():
+        for name, param in model.amy_moss.moss.named_parameters():
             assert not param.requires_grad, (
                 f"Backbone param '{name}' should be frozen"
             )
@@ -55,12 +55,12 @@ class TestBaselineFreeze:
             assert param.requires_grad
 
     def test_norm_is_trainable(self, model):
-        """LayerNorm is trainable (matches ResidualFusion norm in Amy model)."""
+        """LayerNorm is trainable."""
         for param in model.norm.parameters():
             assert param.requires_grad
 
-    def test_only_wrapper_norm_classifier_params_exist(self, model):
-        """No extra trainable modules beyond wrapper, norm, classifier."""
+    def test_only_norm_classifier_params_exist(self, model):
+        """No extra trainable modules beyond norm, classifier."""
         trainable = {n for n, p in model.named_parameters() if p.requires_grad}
         assert all(
             n.startswith("norm.") or n.startswith("classifier.")

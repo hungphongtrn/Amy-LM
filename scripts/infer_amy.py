@@ -24,7 +24,6 @@ from transformers import AutoTokenizer
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.models import AmyForProsodyClassification
-from src.models.codebook_utils import load_prosody_codebook_vectors
 from src.inference import AmyInference, resample_audio
 from src.preprocessing.facodec_encoder import FACodecEncoder
 
@@ -64,13 +63,15 @@ def parse_args():
 
 
 def load_model(checkpoint_path: str, facodec_checkpoint: str, device: torch.device):
-    vectors = load_prosody_codebook_vectors(facodec_checkpoint)
-    model = AmyForProsodyClassification(warm_start_vectors=vectors, device=device)
+    model = AmyForProsodyClassification(
+        device=device,
+        prosody_warm_start_vectors_path=facodec_checkpoint,
+    )
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=True)
     model_state = {
         k: v
         for k, v in ckpt["model_state_dict"].items()
-        if not k.startswith("wrapper.")
+        if not k.startswith("amy_moss.moss.")
     }
     model.load_state_dict(model_state, strict=False)
     model = model.to(device)
@@ -88,7 +89,7 @@ def main():
     model = load_model(args.checkpoint, args.facodec_checkpoint, device)
 
     # --- Load tokenizer ---
-    model_id = model.wrapper.model_id
+    model_id = model.amy_moss.moss_model_id
     print(f"Loading tokenizer from {model_id} ...")
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     if tokenizer.pad_token_id is None:

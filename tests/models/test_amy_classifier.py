@@ -76,36 +76,34 @@ class TestAmyGradientFlow:
         frozen backbone params do not."""
         audio, prosody_idx, timbre = batch
         with torch.no_grad():
-            semantic = model.wrapper.encode_semantic(audio)
+            semantic = model.amy_moss.encode_enriched_audio_embeds(audio)
         semantic = semantic.float()
         T_moss = semantic.shape[1]
 
-        p_emb = model.prosody_embedding(prosody_idx)
-        P = model.temporal_pool(p_emb)
+        p_emb = model.amy_moss.prosody_embedding(prosody_idx)
+        P = model.amy_moss.temporal_pool(p_emb)
         if P.shape[1] != T_moss:
             P = P.transpose(1, 2)
             P = F.adaptive_avg_pool1d(P, T_moss)
             P = P.transpose(1, 2)
-        t_proj = model.timbre_projection(timbre)
+        t_proj = model.amy_moss.timbre_projection(timbre)
         T = t_proj.unsqueeze(1).expand(-1, T_moss, -1)
 
-        H = model.fusion(semantic, prosody=P, timbre=T, content=None, acoustic=None)
+        H = model.amy_moss.residual_fusion(semantic, prosody=P, timbre=T, content=None, acoustic=None)
         loss = H.sum()
         loss.backward()
 
-        # Params that must receive gradients (in the fusion forward path)
         for name, param in model.named_parameters():
             if not param.requires_grad:
                 assert param.grad is None, f"Frozen param '{name}' should not have grad"
-        # Specific trainable params that should have grads
-        assert model.timbre_projection.linear.weight.grad is not None
-        assert model.fusion.lambda_p.grad is not None
-        assert model.fusion.lambda_t.grad is not None
+        assert model.amy_moss.timbre_projection.linear.weight.grad is not None
+        assert model.amy_moss.residual_fusion.lambda_p.grad is not None
+        assert model.amy_moss.residual_fusion.lambda_t.grad is not None
 
     def test_fusion_lambdas_are_trainable(self, model):
         """lambda_p and lambda_t should require grad."""
-        assert model.fusion.lambda_p.requires_grad
-        assert model.fusion.lambda_t.requires_grad
+        assert model.amy_moss.residual_fusion.lambda_p.requires_grad
+        assert model.amy_moss.residual_fusion.lambda_t.requires_grad
 
     def test_classifier_is_trainable(self, model):
         """Classifier head should require grad."""
@@ -114,12 +112,12 @@ class TestAmyGradientFlow:
 
     def test_timbre_projection_is_trainable(self, model):
         """TimbreProjection should require grad."""
-        for name, param in model.timbre_projection.named_parameters():
+        for name, param in model.amy_moss.timbre_projection.named_parameters():
             assert param.requires_grad, f"timbre_projection.{name} should be trainable"
 
     def test_backbone_fully_frozen(self, model):
         """All MOSS-Audio backbone params should have requires_grad=False."""
-        for name, param in model.wrapper.named_parameters():
+        for name, param in model.amy_moss.moss.named_parameters():
             assert not param.requires_grad, (
                 f"Backbone param '{name}' should be frozen"
             )
@@ -153,20 +151,20 @@ class TestAmyBaselineEquivalence:
 
     def test_lambdas_start_at_zero(self, model):
         """lambda_p and lambda_t must be zero at initialization."""
-        assert model.fusion.lambda_p.item() == 0.0
-        assert model.fusion.lambda_t.item() == 0.0
+        assert model.amy_moss.residual_fusion.lambda_p.item() == 0.0
+        assert model.amy_moss.residual_fusion.lambda_t.item() == 0.0
 
     def test_semantic_alone_equals_baseline(self, model, audio, prosody_indices, timbre_vector):
         """With lambdas=0 and prosody/timbre fed, output should equal
         running only semantic through the same path."""
         with torch.no_grad():
-            semantic = model.wrapper.encode_semantic(audio)
+            semantic = model.amy_moss.encode_enriched_audio_embeds(audio)
         semantic = semantic.float()
         T_moss = semantic.shape[1]
         lm_dtype = next(model.get_language_model().parameters()).dtype
 
         with torch.no_grad():
-            H_baseline = model.fusion(
+            H_baseline = model.amy_moss.residual_fusion(
                 semantic,
                 prosody=None, content=None, acoustic=None, timbre=None,
             )
@@ -178,15 +176,15 @@ class TestAmyBaselineEquivalence:
             logits_baseline = model.classifier(pooled_baseline)
 
         with torch.no_grad():
-            p_emb = model.prosody_embedding(prosody_indices)
-            P = model.temporal_pool(p_emb)
+            p_emb = model.amy_moss.prosody_embedding(prosody_indices)
+            P = model.amy_moss.temporal_pool(p_emb)
             if P.shape[1] != T_moss:
                 P = P.transpose(1, 2)
                 P = F.adaptive_avg_pool1d(P, T_moss)
                 P = P.transpose(1, 2)
-            t_proj = model.timbre_projection(timbre_vector)
+            t_proj = model.amy_moss.timbre_projection(timbre_vector)
             T = t_proj.unsqueeze(1).expand(-1, T_moss, -1)
-            H_full = model.fusion(
+            H_full = model.amy_moss.residual_fusion(
                 semantic, prosody=P, timbre=T, content=None, acoustic=None,
             )
             H_full_lm = H_full.to(dtype=lm_dtype)
@@ -197,49 +195,6 @@ class TestAmyBaselineEquivalence:
             logits_full = model.classifier(pooled_full)
 
         assert torch.allclose(logits_baseline, logits_full, atol=1e-4)
-
-
-class TestAmyStreamConfig:
-    """Verify stream activation config controls module construction."""
-
-    def test_disabled_streams_not_instantiated(self, require_gpu, device):
-        """Content and acoustic modules should not exist when disabled."""
-        vectors = torch.randn(1024, 8)
-        config = {"prosody": True, "content": False, "acoustic": False, "timbre": True}
-        model = AmyForProsodyClassification(
-            warm_start_vectors=vectors,
-            stream_config=config,
-            device=device,
-        )
-        assert hasattr(model, "prosody_embedding")
-        assert hasattr(model, "timbre_projection")
-        assert not hasattr(model, "content_embedding")
-        assert not hasattr(model, "acoustic_embedding")
-
-    def test_config_key_missing_for_disabled_streams(self, require_gpu, device):
-        """Missing keys in config default to False (disabled)."""
-        vectors = torch.randn(1024, 8)
-        config = {"prosody": True, "timbre": True}
-        model = AmyForProsodyClassification(
-            warm_start_vectors=vectors,
-            stream_config=config,
-            device=device,
-        )
-        assert hasattr(model, "prosody_embedding")
-        assert hasattr(model, "timbre_projection")
-        assert not hasattr(model, "content_embedding")
-        assert not hasattr(model, "acoustic_embedding")
-
-    def test_config_stored_as_attribute(self, require_gpu, device):
-        """Stream config should be accessible as an attribute."""
-        vectors = torch.randn(1024, 8)
-        config = {"prosody": True, "content": True, "acoustic": False, "timbre": True}
-        model = AmyForProsodyClassification(
-            warm_start_vectors=vectors,
-            stream_config=config,
-            device=device,
-        )
-        assert model.stream_config == config
 
 
 class TestAmyTemporalAlignment:
@@ -262,11 +217,11 @@ class TestAmyTemporalAlignment:
         prosody_indices = torch.randint(0, 1024, (2, 1, 240))
 
         with torch.no_grad():
-            semantic = model.wrapper.encode_semantic(audio)
+            semantic = model.amy_moss.encode_enriched_audio_embeds(audio)
         T_moss = semantic.shape[1]
 
-        p_emb = model.prosody_embedding(prosody_indices)
-        P = model.temporal_pool(p_emb)
+        p_emb = model.amy_moss.prosody_embedding(prosody_indices)
+        P = model.amy_moss.temporal_pool(p_emb)
 
         if P.shape[1] != T_moss:
             P = P.transpose(1, 2)
@@ -284,10 +239,10 @@ class TestAmyTemporalAlignment:
         timbre = torch.randn(1, 256)
 
         with torch.no_grad():
-            semantic = model.wrapper.encode_semantic(audio)
+            semantic = model.amy_moss.encode_enriched_audio_embeds(audio)
         T_moss = semantic.shape[1]
 
-        t_proj = model.timbre_projection(timbre)
+        t_proj = model.amy_moss.timbre_projection(timbre)
         T = t_proj.unsqueeze(1).expand(-1, T_moss, -1)
 
         assert T.shape[1] == T_moss

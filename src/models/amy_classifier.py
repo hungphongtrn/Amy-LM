@@ -4,110 +4,81 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from .embedding import ProsodyEmbedding, TimbreProjection
-from .fusion import ResidualFusion
-from .moss_audio import MossAudioWrapper
-from .pooling import TemporalPool
+from .amy_lm import AmyMossLM, AmyMossLMConfig
+from .moss_audio_model import MossAudioModel
 
 
 class AmyForProsodyClassification(nn.Module):
     """Amy LM for binary sarcasm classification with Prosody + Timbre residual fusion.
 
+    Composes (HAS-A) an AmyMossLM for audio encoding and FACodec enrichment.
     Freezes MOSS-Audio backbone (audio_encoder, audio_adapter, language_model).
-    Trainable modules: ProsodyEmbedding (warm-started), TimbreProjection,
-    ResidualFusion lambdas, and a 2-class classifier head.
+    Trainable: FACodec modules (on self.amy_moss) and a 2-class classifier head.
 
     Args:
-        warm_start_vectors: FACodec prosody codebook vectors [1024, 8] for
-            warm-starting ProsodyEmbedding.
         moss_model_id: HuggingFace model ID for MOSS-Audio backbone.
-        device: Device for model (default: "cpu").
-        stream_config: Dict controlling which FACodec streams are active.
-            Default: prosody=True, timbre=True, content=False, acoustic=False.
-        hidden_dim: Embedding dimension (must match MOSS-Audio hidden_size=2560).
+        device: Device for model (default: "cuda" if available).
+        torch_dtype: Precision for MOSS-Audio backbone (default: bfloat16).
+        load_in_4bit: Whether to load MOSS-Audio in 4-bit quantization.
+        prosody_warm_start_vectors_path: Path to FACodec decoder checkpoint
+            for warm-starting ProsodyEmbedding.
         num_classes: Number of output classes (default: 2 for binary sarcasm).
-        input_rate: FACodec frame rate in Hz (default: 80.0).
-        output_rate: MOSS-Audio semantic frame rate in Hz (default: 12.5).
-        timbre_dim: Dimensionality of input timbre vector (default: 256).
-        vocab_size: FACodec codebook vocabulary size (default: 1024).
+        gradient_checkpointing: Enable gradient checkpointing on Qwen3 LM.
     """
 
     def __init__(
         self,
-        warm_start_vectors: torch.Tensor,
         moss_model_id: str = "OpenMOSS-Team/MOSS-Audio-4B-Thinking",
         device: torch.device | str | None = None,
-        stream_config: dict | None = None,
-        hidden_dim: int = 2560,
+        torch_dtype: torch.dtype = torch.bfloat16,
+        load_in_4bit: bool = False,
+        prosody_warm_start_vectors_path: str | None = None,
+        warm_start_vectors: torch.Tensor | None = None,
         num_classes: int = 2,
-        input_rate: float = 80.0,
-        output_rate: float = 12.5,
-        timbre_dim: int = 256,
-        vocab_size: int = 1024,
         gradient_checkpointing: bool = False,
     ) -> None:
         super().__init__()
-        self.device = torch.device(device) if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.hidden_dim = hidden_dim
-        self.num_classes = num_classes
-        self.output_rate = output_rate
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._device = torch.device(device)
 
-        if stream_config is None:
-            stream_config = {
-                "prosody": True,
-                "content": False,
-                "acoustic": False,
-                "timbre": True,
-            }
-        self.stream_config = stream_config
-
-        self.wrapper = MossAudioWrapper(model_id=moss_model_id, device=self.device)
-
-        if stream_config.get("prosody", False):
-            self.prosody_embedding = ProsodyEmbedding(
-                vocab_size=vocab_size,
-                embed_dim=hidden_dim,
-                init_strategy="warm_start",
-                warm_start_vectors=warm_start_vectors,
+        from_pretrained_kwargs: dict = {
+            "trust_remote_code": True,
+        }
+        if load_in_4bit:
+            from transformers import BitsAndBytesConfig
+            from_pretrained_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch_dtype,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
             )
-        if stream_config.get("timbre", False):
-            self.timbre_projection = TimbreProjection(
-                timbre_dim=timbre_dim,
-                output_dim=hidden_dim,
-            )
+        else:
+            from_pretrained_kwargs["torch_dtype"] = torch_dtype
+        if self._device.type == "cuda":
+            from_pretrained_kwargs["device_map"] = str(self._device)
 
-        self.temporal_pool = TemporalPool(
-            input_rate=input_rate,
-            output_rate=output_rate,
+        moss = MossAudioModel.from_pretrained(moss_model_id, **from_pretrained_kwargs)
+        moss.eval()
+
+        amy_config = AmyMossLMConfig(
+            moss_config=moss.config,
+            prosody_warm_start_vectors_path=prosody_warm_start_vectors_path,
         )
+        self.amy_moss = AmyMossLM(amy_config, moss=moss)
 
-        self.fusion = ResidualFusion(hidden_dim=hidden_dim)
+        if warm_start_vectors is not None and prosody_warm_start_vectors_path is None:
+            self.amy_moss._warm_start_prosody(warm_start_vectors)
 
-        self.classifier = nn.Linear(hidden_dim, num_classes)
-
-        self._freeze_backbone()
-        self._ensure_facodec_trainable()
-
-        self.to(self.device)
+        backbone_device = next(self.amy_moss.parameters()).device
+        self.classifier = nn.Linear(amy_config.hidden_dim, num_classes, device=backbone_device)
 
         if gradient_checkpointing:
-            self.get_language_model().gradient_checkpointing_enable()
-
-    def _freeze_backbone(self) -> None:
-        for param in self.wrapper.parameters():
-            param.requires_grad = False
-
-    def _ensure_facodec_trainable(self) -> None:
-        for name, module in self.named_children():
-            if name in ("wrapper",):
-                continue
-            for param in module.parameters():
-                param.requires_grad = True
+            self.amy_moss.moss.language_model.gradient_checkpointing_enable()
 
     def get_language_model(self) -> nn.Module:
-        return self.wrapper.language_model
+        return self.amy_moss.moss.language_model
 
     def forward(
         self,
@@ -125,29 +96,13 @@ class AmyForProsodyClassification(nn.Module):
         Returns:
             Logits [B, 2] for binary sarcasm classification.
         """
-        prosody_indices = prosody_indices.to(self.device)
-        timbre_vector = timbre_vector.to(self.device)
-
-        with torch.no_grad():
-            semantic = self.wrapper.encode_semantic(audio)
-        T_moss = semantic.shape[1]
-
-        p_emb = self.prosody_embedding(prosody_indices)
-        P = self.temporal_pool(p_emb)
-        if P.shape[1] != T_moss:
-            P = P.transpose(1, 2)
-            P = F.adaptive_avg_pool1d(P, T_moss)
-            P = P.transpose(1, 2)
-
-        t_proj = self.timbre_projection(timbre_vector)
-        T = t_proj.unsqueeze(1).expand(-1, T_moss, -1)
-
-        H = self.fusion(semantic, prosody=P, timbre=T, content=None, acoustic=None)
+        H = self.amy_moss.encode_enriched_audio_embeds(
+            audio, prosody_indices=prosody_indices, timbre_vector=timbre_vector
+        )
 
         language_model = self.get_language_model()
         lm_dtype = next(language_model.parameters()).dtype
-        H_lm = H.to(dtype=lm_dtype)
-        lm_out = language_model(inputs_embeds=H_lm).last_hidden_state
+        lm_out = language_model(inputs_embeds=H.to(dtype=lm_dtype)).last_hidden_state
 
         pooled = lm_out.mean(dim=1)
         logits = self.classifier(pooled)
