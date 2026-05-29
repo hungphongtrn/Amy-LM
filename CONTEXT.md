@@ -53,7 +53,7 @@ A single global utterance-level embedding representing speaker identity. Sourced
 _Avoid_: Speaker embedding, voice print, speaker ID
 
 **Residual Summation**:
-The frame-level additive fusion operation: `LayerNorm(S_t + λ_p·P_t + λ_a·A_t + λ_c·C_t + λ_t·T_t)`. Each stream occupies the same embedding dimension as S_t and contributes marginal signal gated by its own learnable λ. Prosody/Acoustic/Content/Timbre are added to semantics like positional encodings are added to token embeddings.
+The frame-level additive fusion operation: `LayerNorm(S_t + Σ λ_i·LayerNorm_i(stream_i))`. Each stream is normalized via its own per-stream LayerNorm before gate scaling so contributions have unit magnitude regardless of raw embedding scale. Each stream occupies the same embedding dimension as S_t and contributes marginal signal gated by its own learnable λ. Prosody/Acoustic/Content/Timbre are added to semantics like positional encodings are added to token embeddings.
 _Avoid_: Addition, injection (may be confused with DeepStack mechanism), concat fusion
 
 **MOSS-Audio Internal Residual Extension**:
@@ -154,8 +154,12 @@ Evaluation protocol comparing AmyLM's response quality before vs. after DPO trai
 _Avoid_: human eval (it's LLM-judged, not human-judged), automated metrics
 
 **λ (Lambda)**:
-A family of learnable per-stream scalar gates: λ_p (Prosody), λ_a (Acoustic), λ_c (FACodec Content), λ_t (Timbre). Each initialized at zero. Zero-init guarantees the model equals MOSS-Audio at step 0. Individual gates enable clean ablation — freeze a gate at zero to disable its stream.
+A family of learnable per-stream scalar gates: λ_p (Prosody), λ_a (Acoustic), λ_c (FACodec Content), λ_t (Timbre). Initialized at 1.0 in `ResidualFusion` so FACodec modules receive gradient from epoch 1 (zero-init deadlocks FACodec training because `dL/d(FACodec_weights) ∝ λ`). For the classification proof (#31), λ is kept at unit magnitude (effective no-gate additive fusion with per-stream LayerNorm). Individual gates enable clean ablation — freeze a gate at zero to disable its stream.
 _Avoid_: Alpha, weight, scale factor
+
+**FACodec Shuffle Control**:
+Negative control for the claim "FACodec P+T streams contain useful classification signal." Each audio sample is paired with prosody/timbre indices from a different training sample in the same split (derangement). Same model architecture, same parameter count, same LayerNorms, same λ. Only the alignment between speech and FACodec features is broken. If Amy true > Amy shuffled, the aligned FACodec signal is useful. If Amy true ≈ Amy shuffled > Baseline, the gain is from extra capacity/regularization, not FACodec signal.
+_Avoid_: Cross-sample noise, mismatched features
 
 **Social Deafness**:
 The failure mode where a speech model correctly transcribes words but misses emotional/tonal implication (e.g., "I'm fine" spoken with distress).
@@ -180,7 +184,7 @@ _Avoid_: Ablation grid, experiment table
 - **Timbre Vector** is broadcast to all frames of an utterance and never passes through TemporalPool
 - **Prosody Stream**, **Acoustic Stream**, and **FACodec Content Stream** each pass through **TemporalPool** (80 Hz → MOSS frame rate) after embedding
 - **Projection Architecture** and **Extension Architecture** are competing hypotheses for how to represent speech in LLMs
-- **Social Deafness** is the problem; **Hypothesis Matrix** is the evaluation framework
+- **FACodec Shuffle Control** is the negative control for the aligned FACodec signal claim; it uses the same model architecture with per-sample prosody/timbre derangement within each split
 - **Preference Pairs** are constructed by an external LLM from **NVTTS** speech, then encoded through the **FACodec** preprocessing pipeline to produce the **NVTTS-FACodec Dataset** before **DPO** training
 - **DPO** trains **AmyMossLM** via **AmyDPOTrainer** (subclass of `trl.DPOTrainer`), computing per-token log-probabilities of chosen vs. rejected responses on Qwen3's full vocabulary
 - **DPOCollator** produces batches from **NVTTS-FACodec Dataset** rows; **AmyDPOTrainer** uses **Concatenated Forward (AmyLM DPO)** to pass shared audio/prosody/timbre through duplicated batch dimension
@@ -197,7 +201,7 @@ _Avoid_: Ablation grid, experiment table
 > **Domain expert:** "MOSS-Audio. FACodec's content codebooks are a separate **FACodec Content Stream** — disabled in the first experiment. We start with Prosody-only to isolate the social-prosody hypothesis."
 
 > **Dev:** "When we say Extension, where exactly does the injection happen?"
-> **Domain expert:** "At the LLM input, before the first transformer layer — same as positional embeddings. Each stream has its own λ gate, all zero-init so at step 0 the model is literally just MOSS-Audio."
+> **Domain expert:** "At the LLM input, before the first transformer layer — same as positional embeddings. Per-stream LayerNorm normalizes each FACodec stream before gated summation."
 
 > **Dev:** "If λ_p stays near zero after training, is that a failure?"
 > **Domain expert:** "Depends. If benchmarks improve, the embedding tables learned useful structure and λ_p acts as a normalizer. If nothing changes, the hypothesis is falsified — prosody signals from FACodec didn't add anything MOSS-Audio doesn't already have."

@@ -67,7 +67,8 @@ def main(argv: list[str] | None = None) -> int:
         "--seed", str(args.seed),
         "--checkpoint-dir", str(PROJECT_ROOT / "checkpoints" / "training_baseline"),
         "--output-dir", str(PROJECT_ROOT / "outputs" / "training_baseline"),
-        "--patience", "5",
+        "--patience", "0",
+        "--checkpoint-metric", "val_f1",
         "--wandb" if args.wandb else "",
     ]
     cmd = [a for a in cmd if a]

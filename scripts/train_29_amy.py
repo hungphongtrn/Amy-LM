@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Issue #29 — Amy classifier (Prosody+Timbre) saturation on MUStARD.
+"""Issue #29 / #31 — Amy classifier (Prosody+Timbre) proof experiment on MUStARD.
 
 Usage:
-    python scripts/train_29_amy.py            # defaults (warm-started prosody)
+    python scripts/train_29_amy.py            # defaults (warm-started prosody, val_f1 checkpoint)
     python scripts/train_29_amy.py --wandb    # with W&B logging
+    python scripts/train_29_amy.py --facodec-control shuffled  # negative control
 
 Prerequisites:
     python scripts/setup.py        # one-time: download checkpoints + MUStARD data
@@ -46,23 +47,30 @@ def ensure_assets() -> tuple[Path, Path]:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Issue #29 — Amy Classifier Saturation")
+    p = argparse.ArgumentParser(description="Issue #29 / #31 — Amy Classifier Proof")
     p.add_argument("--wandb", action="store_true", help="Enable W&B logging")
     p.add_argument("--data-path", default=None, help="Override path to train.parquet")
     p.add_argument("--facodec-checkpoint", default=None, help="Override path to decoder checkpoint")
-    p.add_argument("--epochs", type=int, default=50)
+    p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--lr", type=float, default=1e-4)
-    p.add_argument("--batch-size", type=int, default=1)
-    p.add_argument("--grad-accum", type=int, default=8)
+    p.add_argument("--batch-size", type=int, default=64)
+    p.add_argument("--grad-accum", type=int, default=1)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", default="cuda")
-    p.add_argument("--patience", type=int, default=5)
+    p.add_argument("--patience", type=int, default=0)
+    p.add_argument(
+        "--facodec-control",
+        type=str,
+        choices=["aligned", "shuffled"],
+        default="aligned",
+        help="FACodec feature alignment: 'aligned' (standard) or 'shuffled' (negative control)",
+    )
     return p.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    print("=== Issue #29: Amy Classifier (Prosody+Timbre) Saturation ===\n")
+    print("=== Issue #29 / #31: Amy Classifier (Prosody+Timbre) Proof ===\n")
 
     decoder, parquet = ensure_assets()
     data_path = args.data_path or str(parquet)
@@ -82,12 +90,15 @@ def main(argv: list[str] | None = None) -> int:
         "--checkpoint-dir", str(PROJECT_ROOT / "checkpoints" / "training_amy"),
         "--output-dir", str(PROJECT_ROOT / "outputs" / "training_amy"),
         "--patience", str(args.patience),
+        "--checkpoint-metric", "val_f1",
+        "--facodec-control", args.facodec_control,
         "--wandb" if args.wandb else "",
     ]
     cmd = [a for a in cmd if a]
 
     print(f"FACodec decoder: {facodec_ckpt}")
     print(f"Data: {data_path}")
+    print(f"FACodec control: {args.facodec_control}")
     print(f"Running: {' '.join(cmd[1:])}\n")
     return subprocess.run(cmd, cwd=str(PROJECT_ROOT)).returncode
 

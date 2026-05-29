@@ -41,6 +41,46 @@ class MustardDataset(Dataset):
         return audio, prosody, timbre, label
 
 
+class ShuffledFacodecDataset(Dataset):
+    """FACodec negative control: derangements prosody/timbre across samples within a split.
+
+    Each sample returns its original audio and label, but prosody/timbre from
+    a *different* sample in the same split. Prosody and timbre remain paired
+    (same donor for both).
+
+    The permutation is a derangement — no sample keeps its own FACodec features
+    when the split has length > 1. Single-sample splits skip derangement.
+
+    Args:
+        dataset: Source Dataset (e.g., MustardDataset or Subset).
+        seed: Deterministic seed for the derangement.
+    """
+
+    def __init__(self, dataset: Dataset, seed: int = 42):
+        super().__init__()
+        self._dataset = dataset
+        n = len(dataset)
+        if n <= 1:
+            self._perm = torch.arange(n)
+        else:
+            generator = torch.Generator().manual_seed(seed)
+            self._perm = self._make_derangement(n, generator)
+
+    @staticmethod
+    def _make_derangement(n: int, generator: torch.Generator) -> torch.Tensor:
+        offset = torch.randint(1, n, (1,), generator=generator).item()
+        return torch.tensor([(i + offset) % n for i in range(n)])
+
+    def __len__(self) -> int:
+        return len(self._dataset)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+        donor_idx = int(self._perm[idx])
+        audio, _, _, label = self._dataset[idx]
+        _, prosody, timbre, _ = self._dataset[donor_idx]
+        return audio, prosody, timbre, label
+
+
 def collate_mustard(
     batch: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]]
 ) -> tuple[

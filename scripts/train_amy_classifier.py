@@ -19,7 +19,11 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.data.mustard_dataset import collate_mustard, create_mustard_splits
+from src.data.mustard_dataset import (
+    ShuffledFacodecDataset,
+    collate_mustard,
+    create_mustard_splits,
+)
 from src.models import AmyForProsodyClassification, BaselineClassifier
 from src.training.trainer import AmyTrainer
 
@@ -100,6 +104,20 @@ def parse_args():
         default=1.0,
         help="Max gradient norm for clipping (default: 1.0)",
     )
+    p.add_argument(
+        "--checkpoint-metric",
+        type=str,
+        choices=["val_accuracy", "val_f1"],
+        default="val_accuracy",
+        help="Metric for best checkpoint selection and early stopping (default: val_accuracy)",
+    )
+    p.add_argument(
+        "--facodec-control",
+        type=str,
+        choices=["aligned", "shuffled"],
+        default="aligned",
+        help="FACodec feature alignment: 'aligned' (standard) or 'shuffled' (negative control). Only valid with --mode amy.",
+    )
     return p.parse_args()
 
 
@@ -110,8 +128,20 @@ def main():
     print(f"Device: {device}")
     print(f"Mode: {args.mode}")
 
+    # Validate facodec-control only valid with amy
+    is_baseline = args.mode == "baseline"
+    if is_baseline and args.facodec_control == "shuffled":
+        raise ValueError("--facodec-control shuffled is only valid with --mode amy (baseline has no FACodec streams)")
+
     # Data
     train_ds, val_ds, test_ds = create_mustard_splits(args.data_path, seed=args.seed)
+
+    if not is_baseline and args.facodec_control == "shuffled":
+        train_ds = ShuffledFacodecDataset(train_ds, seed=args.seed)
+        val_ds = ShuffledFacodecDataset(val_ds, seed=args.seed)
+        test_ds = ShuffledFacodecDataset(test_ds, seed=args.seed)
+        print("FACodec control: shuffled (derangement within each split)")
+
     train_loader = DataLoader(
         train_ds,
         batch_size=args.batch_size,
@@ -134,7 +164,6 @@ def main():
     )
 
     # Model
-    is_baseline = args.mode == "baseline"
     if is_baseline:
         model = BaselineClassifier(
             device=device,
@@ -171,7 +200,8 @@ def main():
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     # Training loop
-    best_val_acc = 0.0
+    ckpt_metric = args.checkpoint_metric
+    best_metric = -float("inf")
     epochs_no_improve = 0
     epoch_bar = tqdm(range(1, args.epochs + 1), desc="Epoch", unit="ep")
     for epoch in epoch_bar:
@@ -180,7 +210,7 @@ def main():
 
         epoch_bar.set_postfix(
             train_loss=f"{train_metrics['train_loss']:.3f}",
-            val_acc=f"{val_metrics['val_accuracy']:.3f}",
+            val_metric=f"{val_metrics[ckpt_metric]:.3f}",
         )
 
         tqdm.write(
@@ -198,11 +228,11 @@ def main():
             lambdas = trainer._get_lambdas()
             tqdm.write(f"  lambda_p={lambdas['lambda_p']:.6f}  lambda_t={lambdas['lambda_t']:.6f}")
 
-        if val_metrics["val_accuracy"] >= best_val_acc:
-            best_val_acc = val_metrics["val_accuracy"]
+        if val_metrics[ckpt_metric] >= best_metric:
+            best_metric = val_metrics[ckpt_metric]
             epochs_no_improve = 0
             trainer.save_checkpoint(str(ckpt_dir / "best_model.pt"))
-            tqdm.write(f"  -> Saved best checkpoint (val_acc={best_val_acc:.3f})")
+            tqdm.write(f"  -> Saved best checkpoint ({ckpt_metric}={best_metric:.3f})")
         else:
             epochs_no_improve += 1
 
@@ -238,7 +268,9 @@ def main():
         "lr": args.lr,
         "weight_decay": args.weight_decay,
         "test_metrics": test_metrics,
-        "best_val_accuracy": best_val_acc,
+        "checkpoint_metric": ckpt_metric,
+        "best_checkpoint_value": best_metric,
+        "facodec_control": args.facodec_control,
     }
     with open(out_dir / "results.json", "w") as f:
         json.dump(results, f, indent=2)
