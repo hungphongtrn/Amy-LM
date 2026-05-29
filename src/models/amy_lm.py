@@ -131,6 +131,8 @@ class AmyMossLM(PreTrainedModel, GenerationMixin):
         else:
             self.moss = MossAudioModel(config.moss_config)
 
+        self._processor = None
+
         self._add_facodec_modules(config)
         self._apply_freeze(config)
         self.post_init()
@@ -249,13 +251,29 @@ class AmyMossLM(PreTrainedModel, GenerationMixin):
             timbre=streams.get("timbre"),
         )
 
+    def _get_processor(self):
+        if self._processor is None:
+            self._processor = MossAudioProcessor.from_pretrained(
+                self.config.moss_config._name_or_path,
+                trust_remote_code=True,
+                enable_time_marker=True,
+            )
+        return self._processor
+
+    @staticmethod
+    def _compute_audio_out_lens(mel_lens: torch.Tensor) -> torch.Tensor:
+        out = mel_lens
+        for _ in range(3):
+            out = (out - 1) // 2 + 1
+        return out
+
     @torch.no_grad()
     def encode_enriched_audio_embeds(
         self,
         audio: torch.Tensor,
         prosody_indices: Optional[torch.Tensor] = None,
         timbre_vector: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Encode raw waveform to enriched audio embeddings.
 
         Mel extraction + audio encoder + audio adapter + FACodec enrichment.
@@ -267,7 +285,9 @@ class AmyMossLM(PreTrainedModel, GenerationMixin):
             timbre_vector: Optional timbre vector [B, 256].
 
         Returns:
-            Enriched embeddings [B, T_moss, 2560] at ~12.5 Hz.
+            (embeds, audio_out_lens) tuple:
+                embeds: Enriched embeddings [B, T_moss_max, 2560] at ~12.5 Hz, padded.
+                audio_out_lens: Valid frame count per sample [B], int64.
         """
         device = next(self.moss.parameters()).device
         dtype = next(self.moss.parameters()).dtype
@@ -275,16 +295,16 @@ class AmyMossLM(PreTrainedModel, GenerationMixin):
         if audio.dim() != 2:
             raise ValueError(f"Expected audio shape [B, T_audio], got {tuple(audio.shape)}")
         if audio.shape[0] == 0:
-            return torch.empty(0, 0, self.config.hidden_dim, device=device, dtype=dtype)
+            return (
+                torch.empty(0, 0, self.config.hidden_dim, device=device, dtype=dtype),
+                torch.empty(0, device=device, dtype=torch.long),
+            )
 
-        processor = MossAudioProcessor.from_pretrained(
-            self.config.moss_config._name_or_path,
-            trust_remote_code=True,
-            enable_time_marker=True,
-        )
+        processor = self._get_processor()
 
         mels = [processor._extract_mel(audio[i].detach().cpu()) for i in range(audio.shape[0])]
         seqlens = torch.tensor([mel.shape[-1] for mel in mels], dtype=torch.long)
+        audio_out_lens = self._compute_audio_out_lens(seqlens.clone())
         max_len = int(seqlens.max().item())
         audio_data = torch.zeros(
             (len(mels), mels[0].shape[0], max_len),
@@ -298,11 +318,12 @@ class AmyMossLM(PreTrainedModel, GenerationMixin):
         audio_embeds, _ = self.moss.get_audio_features(audio_data, audio_data_seqlens)
         audio_embeds = self.moss.audio_adapter(audio_embeds)
 
-        return self.enrich_audio_embeds(
+        embedded = self.enrich_audio_embeds(
             audio_embeds,
             prosody_indices=prosody_indices.to(device) if prosody_indices is not None else None,
             timbre_vector=timbre_vector.to(device) if timbre_vector is not None else None,
         )
+        return embedded, audio_out_lens.to(device)
 
     def forward(
         self,

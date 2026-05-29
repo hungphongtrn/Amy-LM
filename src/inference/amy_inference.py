@@ -57,11 +57,12 @@ class AmyInference:
         prosody_indices: torch.Tensor,
         timbre_vector: torch.Tensor,
     ) -> torch.Tensor:
-        return self.model.amy_moss.encode_enriched_audio_embeds(
+        fused_h, _ = self.model.amy_moss.encode_enriched_audio_embeds(
             audio.to(self.device),
             prosody_indices=prosody_indices.to(self.device),
             timbre_vector=timbre_vector.to(self.device),
         )
+        return fused_h
 
     def _assemble_inputs(self, fused_h: torch.Tensor, instruction: str) -> tuple[torch.Tensor, torch.Tensor]:
         chat = [{"role": "user", "content": instruction}]

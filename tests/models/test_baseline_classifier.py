@@ -13,9 +13,9 @@ from src.models.baseline_classifier import BaselineClassifier
 
 
 class TestBaselineLoopLogic:
-    """Verify the per-sample loop in forward() handles batch_size > 1.
+    """Verify batching logic in forward() handles batch_size correctly.
 
-    These tests mock the heavy model components and test the loop logic.
+    These tests mock the heavy model components and test the batching logic.
     """
 
     class _MockLM(nn.Module):
@@ -25,10 +25,10 @@ class TestBaselineLoopLogic:
             self._D_out = D_out
             self._dummy = nn.Parameter(torch.zeros(1))
 
-        def forward(self, inputs_embeds):
+        def forward(self, inputs_embeds, attention_mask=None):
             B = inputs_embeds.shape[0]
             out = MagicMock()
-            out.last_hidden_state = torch.randn(B, self._T_out, self._D_out)
+            out.last_hidden_state = torch.randn(B, inputs_embeds.shape[1], self._D_out)
             return out
 
     @pytest.fixture
@@ -40,9 +40,15 @@ class TestBaselineLoopLogic:
         baseline._device = torch.device("cpu")
         baseline.norm = nn.Identity()
         baseline.classifier = nn.Linear(2560, 2)
+
+        def _fake_encode(audio, prosody_indices=None, timbre_vector=None):
+            B = audio.shape[0]
+            T_out = 25
+            return torch.randn(B, T_out, 2560), torch.full((B,), T_out, dtype=torch.long)
+
         baseline.amy_moss = MagicMock()
         baseline.amy_moss.encode_enriched_audio_embeds = MagicMock(
-            return_value=torch.randn(1, 25, 2560)
+            side_effect=_fake_encode
         )
         baseline.get_language_model = MagicMock(
             return_value=self._MockLM()
@@ -61,14 +67,14 @@ class TestBaselineLoopLogic:
         audio = torch.randn(B, 16000)
         logits = mock_modules(audio)
         assert logits.shape == (B, 2)
-        assert mock_modules.amy_moss.encode_enriched_audio_embeds.call_count == B
+        assert mock_modules.amy_moss.encode_enriched_audio_embeds.call_count == 1
 
     def test_batch_8_forward(self, mock_modules):
         B = 8
         audio = torch.randn(B, 32000)
         logits = mock_modules(audio)
         assert logits.shape == (B, 2)
-        assert mock_modules.amy_moss.encode_enriched_audio_embeds.call_count == B
+        assert mock_modules.amy_moss.encode_enriched_audio_embeds.call_count == 1
 
 
 class TestBaselineForwardShape:

@@ -99,14 +99,22 @@ class AmyForProsodyClassification(nn.Module):
         language_model = self.get_language_model()
         lm_dtype = next(language_model.parameters()).dtype
 
-        logits_list = []
-        for i in range(audio.shape[0]):
-            H = self.amy_moss.encode_enriched_audio_embeds(
-                audio[i : i + 1],
-                prosody_indices=prosody_indices[i : i + 1],
-                timbre_vector=timbre_vector[i : i + 1],
-            )
-            lm_out = language_model(inputs_embeds=H.to(dtype=lm_dtype)).last_hidden_state
-            pooled = lm_out.mean(dim=1)
-            logits_list.append(self.classifier(pooled))
-        return torch.cat(logits_list, dim=0)
+        H, audio_out_lens = self.amy_moss.encode_enriched_audio_embeds(
+            audio,
+            prosody_indices=prosody_indices,
+            timbre_vector=timbre_vector,
+        )
+        B, T_max, D = H.shape
+
+        pos = torch.arange(T_max, device=H.device).unsqueeze(0).expand(B, -1)
+        audio_mask = pos < audio_out_lens.unsqueeze(-1)
+        attention_mask = audio_mask.to(lm_dtype)
+
+        lm_out = language_model(
+            inputs_embeds=H.to(dtype=lm_dtype),
+            attention_mask=attention_mask,
+        ).last_hidden_state
+
+        mask_float = audio_mask.to(dtype=lm_out.dtype)
+        pooled = (lm_out * mask_float.unsqueeze(-1)).sum(dim=1) / mask_float.sum(dim=1, keepdim=True).clamp(min=1)
+        return self.classifier(pooled)

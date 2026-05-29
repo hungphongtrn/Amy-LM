@@ -99,7 +99,7 @@ class TestAmyGradientFlow:
         frozen backbone params do not."""
         audio, prosody_idx, timbre = batch
         with torch.no_grad():
-            semantic = model.amy_moss.encode_enriched_audio_embeds(audio)
+            semantic, _ = model.amy_moss.encode_enriched_audio_embeds(audio)
         semantic = semantic.float()
         T_moss = semantic.shape[1]
 
@@ -181,7 +181,7 @@ class TestAmyBaselineEquivalence:
         """With lambdas=0 and prosody/timbre fed, output should equal
         running only semantic through the same path."""
         with torch.no_grad():
-            semantic = model.amy_moss.encode_enriched_audio_embeds(audio)
+            semantic, _ = model.amy_moss.encode_enriched_audio_embeds(audio)
         semantic = semantic.float()
         T_moss = semantic.shape[1]
         lm_dtype = next(model.get_language_model().parameters()).dtype
@@ -240,7 +240,7 @@ class TestAmyTemporalAlignment:
         prosody_indices = torch.randint(0, 1024, (2, 1, 240))
 
         with torch.no_grad():
-            semantic = model.amy_moss.encode_enriched_audio_embeds(audio)
+            semantic, _ = model.amy_moss.encode_enriched_audio_embeds(audio)
         T_moss = semantic.shape[1]
 
         p_emb = model.amy_moss.prosody_embedding(prosody_indices)
@@ -262,7 +262,7 @@ class TestAmyTemporalAlignment:
         timbre = torch.randn(1, 256)
 
         with torch.no_grad():
-            semantic = model.amy_moss.encode_enriched_audio_embeds(audio)
+            semantic, _ = model.amy_moss.encode_enriched_audio_embeds(audio)
         T_moss = semantic.shape[1]
 
         t_proj = model.amy_moss.timbre_projection(timbre)
@@ -274,9 +274,9 @@ class TestAmyTemporalAlignment:
 
 
 class TestAmyLoopLogic:
-    """Verify the per-sample loop in forward() handles batch_size > 1.
+    """Verify batching logic in forward() handles batch_size correctly.
 
-    These tests mock the heavy model components and test the loop logic.
+    These tests mock the heavy model components and test the batching logic.
     """
 
     class _MockLM(nn.Module):
@@ -286,10 +286,10 @@ class TestAmyLoopLogic:
             self._D_out = D_out
             self._dummy = nn.Parameter(torch.zeros(1))
 
-        def forward(self, inputs_embeds):
+        def forward(self, inputs_embeds, attention_mask=None):
             B = inputs_embeds.shape[0]
             out = MagicMock()
-            out.last_hidden_state = torch.randn(B, self._T_out, self._D_out)
+            out.last_hidden_state = torch.randn(B, inputs_embeds.shape[1], self._D_out)
             return out
 
     @pytest.fixture
@@ -299,9 +299,15 @@ class TestAmyLoopLogic:
         nn.Module.__init__(model)
         model._device = torch.device("cpu")
         model.classifier = nn.Linear(2560, 2)
+
+        def _fake_encode(audio, prosody_indices=None, timbre_vector=None):
+            B = audio.shape[0]
+            T_out = 25
+            return torch.randn(B, T_out, 2560), torch.full((B,), T_out, dtype=torch.long)
+
         model.amy_moss = MagicMock()
         model.amy_moss.encode_enriched_audio_embeds = MagicMock(
-            return_value=torch.randn(1, 25, 2560)
+            side_effect=_fake_encode
         )
         model.get_language_model = MagicMock(
             return_value=self._MockLM()
@@ -324,7 +330,7 @@ class TestAmyLoopLogic:
         timbre = torch.randn(B, 256)
         logits = mock_modules(audio, prosody, timbre)
         assert logits.shape == (B, 2)
-        assert mock_modules.amy_moss.encode_enriched_audio_embeds.call_count == B
+        assert mock_modules.amy_moss.encode_enriched_audio_embeds.call_count == 1
 
     def test_batch_8_forward(self, mock_modules):
         B = 8
@@ -333,4 +339,4 @@ class TestAmyLoopLogic:
         timbre = torch.randn(B, 256)
         logits = mock_modules(audio, prosody, timbre)
         assert logits.shape == (B, 2)
-        assert mock_modules.amy_moss.encode_enriched_audio_embeds.call_count == B
+        assert mock_modules.amy_moss.encode_enriched_audio_embeds.call_count == 1

@@ -53,7 +53,7 @@ class _DummyAmyMoss:
 
     def encode_enriched_audio_embeds(self, audio, prosody_indices=None, timbre_vector=None):
         torch.manual_seed(7)
-        return torch.randn(audio.shape[0], 12, 2560)
+        return torch.randn(audio.shape[0], 12, 2560), torch.full((audio.shape[0],), 12, dtype=torch.long)
 
 
 class _DummyLM(torch.nn.Module):
