@@ -55,10 +55,25 @@ def _tiny_moss() -> MossAudioModel:
 
 
 def _unwrap_amy(base) -> torch.nn.Module:
-    module = base
-    while hasattr(module, "base_model"):
-        module = module.base_model
-    return module
+    """Return the AmyMossLM module inside PEFT without chasing base_model forever.
+
+    PEFT/HF wrappers expose nested ``base_model`` properties, and MossAudioModel's
+    PreTrainedModel base property can point back to itself. Searching registered
+    modules is bounded by PyTorch's memoized traversal and finds the module that
+    actually owns the FACodec enrichment layers.
+    """
+    for module in base.modules():
+        if all(
+            hasattr(module, attr)
+            for attr in (
+                "moss",
+                "prosody_embedding",
+                "timbre_projection",
+                "residual_fusion",
+            )
+        ):
+            return module
+    raise RuntimeError("Could not find AmyMossLM inside PEFT-wrapped model")
 
 
 def build_model(device: torch.device) -> torch.nn.Module:
