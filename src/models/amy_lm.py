@@ -260,13 +260,6 @@ class AmyMossLM(PreTrainedModel, GenerationMixin):
             )
         return self._processor
 
-    @staticmethod
-    def _compute_audio_out_lens(mel_lens: torch.Tensor) -> torch.Tensor:
-        out = mel_lens
-        for _ in range(3):
-            out = (out - 1) // 2 + 1
-        return out
-
     @torch.no_grad()
     def encode_enriched_audio_embeds(
         self,
@@ -301,29 +294,38 @@ class AmyMossLM(PreTrainedModel, GenerationMixin):
             )
 
         processor = self._get_processor()
+        B = audio.shape[0]
 
-        mels = [processor._extract_mel(audio[i].detach().cpu()) for i in range(audio.shape[0])]
-        seqlens = torch.tensor([mel.shape[-1] for mel in mels], dtype=torch.long)
-        audio_out_lens = self._compute_audio_out_lens(seqlens.clone())
-        max_len = int(seqlens.max().item())
-        audio_data = torch.zeros(
-            (len(mels), mels[0].shape[0], max_len),
-            dtype=dtype,
-        )
-        for idx, mel in enumerate(mels):
-            audio_data[idx, :, : mel.shape[-1]] = mel.to(dtype=dtype)
-        audio_data = audio_data.to(device)
-        audio_data_seqlens = seqlens.to(device)
+        samples: list[torch.Tensor] = []
+        out_lens: list[int] = []
 
-        audio_embeds, _ = self.moss.get_audio_features(audio_data, audio_data_seqlens)
-        audio_embeds = self.moss.audio_adapter(audio_embeds)
+        for i in range(B):
+            mel = processor._extract_mel(audio[i].detach().cpu())
+            audio_data = mel.unsqueeze(0).to(dtype=dtype).to(device)
+            audio_data_seqlens = torch.tensor(
+                [mel.shape[-1]], dtype=torch.long, device=device
+            )
 
-        embedded = self.enrich_audio_embeds(
-            audio_embeds,
-            prosody_indices=prosody_indices.to(device) if prosody_indices is not None else None,
-            timbre_vector=timbre_vector.to(device) if timbre_vector is not None else None,
-        )
-        return embedded, audio_out_lens.to(device)
+            audio_embeds, _ = self.moss.get_audio_features(audio_data, audio_data_seqlens)
+            audio_embeds = self.moss.audio_adapter(audio_embeds)
+
+            embedded = self.enrich_audio_embeds(
+                audio_embeds,
+                prosody_indices=prosody_indices[i : i + 1] if prosody_indices is not None else None,
+                timbre_vector=timbre_vector[i : i + 1] if timbre_vector is not None else None,
+            )
+            samples.append(embedded[0])
+            out_lens.append(int(embedded.shape[1]))
+
+        out_lens_t = torch.tensor(out_lens, device=device, dtype=torch.long)
+        T_max = int(out_lens_t.max().item())
+        D = self.config.hidden_dim
+
+        padded = torch.zeros(B, T_max, D, device=device, dtype=dtype)
+        for i, s in enumerate(samples):
+            padded[i, : s.shape[0], :] = s
+
+        return padded, out_lens_t
 
     def forward(
         self,
