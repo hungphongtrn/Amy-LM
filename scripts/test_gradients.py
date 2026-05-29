@@ -107,6 +107,9 @@ def build_model(device: torch.device) -> torch.nn.Module:
     )
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
+    # PEFT creates active adapter copies for modules_to_save; move the wrapped
+    # model after wrapping so FACodec adapter copies live with CUDA inputs.
+    model = model.to(device)
     return model
 
 
