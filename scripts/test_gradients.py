@@ -124,7 +124,7 @@ def print_header() -> None:
     print()
     hdr = (
         f"{'PARAMETER NAME':<85s} "
-        f"{'DTYPE':>8s} "
+        f"{'DTYPE':>15s} "
         f"{'TRAINABLE':>9s} "
         f"{'#ELEMS':>12s} "
         f"{'GRAD NORM':>12s} "
@@ -155,7 +155,7 @@ def log_gradient(row_name: str, param: torch.nn.Parameter | None) -> None:
 
     vals = (
         row_name[:84].ljust(85),
-        dtype_str[:7].rjust(8),
+        dtype_str[:15].rjust(15),
         str(trainable).rjust(5),
         format_num(num_elems) if num_elems > 0 else " ".rjust(12),
         format_num(g_norm) if not (isinstance(g_norm, float) and g_norm != g_norm) else " ".rjust(12),
@@ -164,6 +164,11 @@ def log_gradient(row_name: str, param: torch.nn.Parameter | None) -> None:
         format_num(g_mean) if not (isinstance(g_mean, float) and g_mean != g_mean) else " ".rjust(12),
     )
     print(f"{vals[0]} {vals[1]} {vals[2]} {vals[3]} {vals[4]} {vals[5]} {vals[6]} {vals[7]}")
+
+
+def _expected_no_grad(name: str) -> bool:
+    """Trainable parameters that are intentionally inactive in this smoke input."""
+    return any(gate in name for gate in ("lambda_c", "lambda_a"))
 
 
 def main() -> None:
@@ -260,8 +265,15 @@ def main() -> None:
     trainable_w_grad = sum(
         1 for _, p in model.named_parameters() if p.requires_grad and p.grad is not None
     )
-    trainable_no_grad = sum(
-        1 for _, p in model.named_parameters() if p.requires_grad and p.grad is None
+    trainable_unexpected_no_grad = sum(
+        1
+        for name, p in model.named_parameters()
+        if p.requires_grad and p.grad is None and not _expected_no_grad(name)
+    )
+    trainable_expected_no_grad = sum(
+        1
+        for name, p in model.named_parameters()
+        if p.requires_grad and p.grad is None and _expected_no_grad(name)
     )
     frozen_w_grad = sum(
         1 for _, p in model.named_parameters() if not p.requires_grad and p.grad is not None
@@ -270,7 +282,8 @@ def main() -> None:
         1 for _, p in model.named_parameters() if not p.requires_grad and p.grad is None
     )
     print(f"  Trainable + has grad : {trainable_w_grad}")
-    print(f"  Trainable + NO grad  : {trainable_no_grad}  <-- PROBLEM if > 0")
+    print(f"  Trainable + NO grad  : {trainable_unexpected_no_grad}  <-- PROBLEM if > 0")
+    print(f"  Expected inactive    : {trainable_expected_no_grad}  (lambda_c/lambda_a: no content/acoustic streams)")
     print(f"  Frozen    + has grad : {frozen_w_grad}       <-- PROBLEM if > 0")
     print(f"  Frozen    + no grad  : {frozen_no_grad}")
 
