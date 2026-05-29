@@ -19,6 +19,7 @@ class AmyTrainer:
         grad_accum_steps: int = 4,
         log_wandb: bool = False,
         is_baseline: bool = False,
+        max_grad_norm: float = 1.0,
     ) -> None:
         if grad_accum_steps < 1:
             raise ValueError(f"grad_accum_steps must be >= 1, got {grad_accum_steps}")
@@ -32,6 +33,7 @@ class AmyTrainer:
         self.grad_accum_steps = grad_accum_steps
         self.log_wandb = log_wandb
         self.is_baseline = is_baseline
+        self.max_grad_norm = max_grad_norm
         self.current_epoch = 0
 
     def training_step(
@@ -73,6 +75,8 @@ class AmyTrainer:
 
         self.model.train()
         total_loss = 0.0
+        total_grad_norm = 0.0
+        grad_steps = 0
         all_preds = []
         all_labels = []
 
@@ -84,8 +88,13 @@ class AmyTrainer:
             scaled_loss.backward()
 
             if (i + 1) % self.grad_accum_steps == 0 or (i + 1) == n_batches:
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), self.max_grad_norm
+                )
                 self.optimizer.step()
                 self.optimizer.zero_grad()
+                total_grad_norm += grad_norm.item()
+                grad_steps += 1
 
             total_loss += loss.item()
             all_preds.append(logits)
@@ -95,6 +104,8 @@ class AmyTrainer:
         all_labels = torch.cat(all_labels)
         metrics = self._compute_metrics(all_preds, all_labels, prefix="train")
         metrics["train_loss"] = total_loss / n_batches
+        if grad_steps > 0:
+            metrics["train_grad_norm"] = total_grad_norm / grad_steps
 
         if self.log_wandb:
             import wandb

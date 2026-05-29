@@ -94,6 +94,12 @@ def parse_args():
         default=0,
         help="Early stopping patience (0 = disabled, run all epochs)",
     )
+    p.add_argument(
+        "--max-grad-norm",
+        type=float,
+        default=1.0,
+        help="Max gradient norm for clipping (default: 1.0)",
+    )
     return p.parse_args()
 
 
@@ -157,6 +163,7 @@ def main():
         grad_accum_steps=args.grad_accum,
         log_wandb=args.wandb,
         is_baseline=is_baseline,
+        max_grad_norm=args.max_grad_norm,
     )
 
     # Checkpoint dir
@@ -181,6 +188,7 @@ def main():
             f"Train Loss: {train_metrics['train_loss']:.4f} | "
             f"Acc: {train_metrics['train_accuracy']:.3f} | "
             f"F1: {train_metrics['train_f1']:.3f} | "
+            f"Grad: {train_metrics.get('train_grad_norm', float('nan')):.2f} | "
             f"Val Loss: {val_metrics['val_loss']:.4f} | "
             f"Acc: {val_metrics['val_accuracy']:.3f} | "
             f"F1: {val_metrics['val_f1']:.3f}"
@@ -190,7 +198,7 @@ def main():
             lambdas = trainer._get_lambdas()
             tqdm.write(f"  lambda_p={lambdas['lambda_p']:.6f}  lambda_t={lambdas['lambda_t']:.6f}")
 
-        if val_metrics["val_accuracy"] > best_val_acc:
+        if val_metrics["val_accuracy"] >= best_val_acc:
             best_val_acc = val_metrics["val_accuracy"]
             epochs_no_improve = 0
             trainer.save_checkpoint(str(ckpt_dir / "best_model.pt"))
