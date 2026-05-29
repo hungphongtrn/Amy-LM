@@ -23,10 +23,14 @@ def _tiny_moss() -> MossAudioModel:
         audio_config={
             "d_model": 32,
             "output_dim": 32,
+            "num_mel_bins": 128,
             "encoder_layers": 1,
             "encoder_attention_heads": 2,
+            "encoder_ffn_dim": 64,
+            "downsample_hidden_size": 8,
             "deepstack_encoder_layer_indexes": [],
         },
+        adapter_hidden_size=32,
     )
     return MossAudioModel(config)
 
