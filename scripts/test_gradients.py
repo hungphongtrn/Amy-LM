@@ -77,7 +77,8 @@ def _unwrap_amy(base) -> torch.nn.Module:
 
 
 def build_model(device: torch.device) -> torch.nn.Module:
-    moss = _tiny_moss().to(device)
+    model_dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+    moss = _tiny_moss().to(device=device, dtype=model_dtype)
     amy_config = AmyMossLMConfig(
         moss_config=moss.config,
         hidden_dim=moss.config.language_config.hidden_size,
@@ -109,7 +110,7 @@ def build_model(device: torch.device) -> torch.nn.Module:
     model.print_trainable_parameters()
     # PEFT creates active adapter copies for modules_to_save; move the wrapped
     # model after wrapping so FACodec adapter copies live with CUDA inputs.
-    model = model.to(device)
+    model = model.to(device=device, dtype=model_dtype)
     return model
 
 
