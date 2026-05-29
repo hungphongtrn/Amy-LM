@@ -56,6 +56,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--grad-accum", type=int, default=8)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", default="cuda")
+    p.add_argument("--patience", type=int, default=5)
     return p.parse_args(argv)
 
 
@@ -80,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
         "--seed", str(args.seed),
         "--checkpoint-dir", str(PROJECT_ROOT / "checkpoints" / "training_amy"),
         "--output-dir", str(PROJECT_ROOT / "outputs" / "training_amy"),
+        "--patience", str(args.patience),
         "--wandb" if args.wandb else "",
     ]
     cmd = [a for a in cmd if a]

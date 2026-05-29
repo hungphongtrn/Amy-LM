@@ -48,11 +48,6 @@ class AmyTrainer:
                 f"Expected batch of 4 or 6 elements, got {n}. "
                 f"Use collate_mustard for collation or TensorDataset with 4 elements."
             )
-        if self.is_baseline and n != 4:
-            raise ValueError(
-                f"Baseline mode expects batch of 4 elements (audio, _, _, labels), got {n}."
-            )
-
         audio, prosody, timbre, labels = batch[:4]
         audio = audio.to(self.device)
         labels = labels.to(self.device)

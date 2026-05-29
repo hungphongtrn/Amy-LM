@@ -87,6 +87,12 @@ def parse_args():
         default="cuda",
         help="Device: cuda or cpu",
     )
+    p.add_argument(
+        "--patience",
+        type=int,
+        default=0,
+        help="Early stopping patience (0 = disabled, run all epochs)",
+    )
     return p.parse_args()
 
 
@@ -158,6 +164,7 @@ def main():
 
     # Training loop
     best_val_acc = 0.0
+    epochs_no_improve = 0
     for epoch in range(1, args.epochs + 1):
         print(f"\n--- Epoch {epoch}/{args.epochs} ---")
         train_metrics = trainer.train_epoch(train_loader)
@@ -180,10 +187,17 @@ def main():
 
         if val_metrics["val_accuracy"] > best_val_acc:
             best_val_acc = val_metrics["val_accuracy"]
+            epochs_no_improve = 0
             trainer.save_checkpoint(str(ckpt_dir / "best_model.pt"))
             print(f"  -> Saved best checkpoint (val_acc={best_val_acc:.3f})")
+        else:
+            epochs_no_improve += 1
 
         trainer.save_checkpoint(str(ckpt_dir / f"epoch_{epoch}.pt"))
+
+        if args.patience > 0 and epochs_no_improve >= args.patience:
+            print(f"\nEarly stopping at epoch {epoch} (no improvement for {args.patience} epochs)")
+            break
 
     # Final evaluation on test set
     print("\n--- Test Evaluation (best checkpoint) ---")
@@ -201,7 +215,10 @@ def main():
     results = {
         "mode": args.mode,
         "seed": args.seed,
-        "epochs": args.epochs,
+        "epochs_requested": args.epochs,
+        "epochs_completed": epoch,
+        "early_stopped": args.patience > 0 and epochs_no_improve >= args.patience,
+        "patience": args.patience,
         "batch_size": args.batch_size,
         "grad_accum_steps": args.grad_accum,
         "effective_batch_size": args.batch_size * args.grad_accum,
