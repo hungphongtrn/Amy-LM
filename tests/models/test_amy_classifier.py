@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 from src.models.amy_classifier import AmyForProsodyClassification
@@ -38,6 +41,26 @@ class TestAmyForwardShape:
         logits = model(audio, prosody_indices, timbre_vector)
         assert logits.shape == (batch, 2)
         assert logits.dtype == torch.float32
+
+    def test_forward_output_shape_batch_3(self, model):
+        """Forward pass with batch_size=3 produces [3, 2] logits (regression)."""
+        batch = 3
+        audio = torch.randn(batch, 32000)
+        prosody_indices = torch.randint(0, 1024, (batch, 1, 160))
+        timbre_vector = torch.randn(batch, 256)
+
+        logits = model(audio, prosody_indices, timbre_vector)
+        assert logits.shape == (batch, 2)
+
+    def test_forward_output_shape_batch_8(self, model):
+        """Forward pass with batch_size=8 produces [8, 2] logits (regression)."""
+        batch = 8
+        audio = torch.randn(batch, 32000)
+        prosody_indices = torch.randint(0, 1024, (batch, 1, 160))
+        timbre_vector = torch.randn(batch, 256)
+
+        logits = model(audio, prosody_indices, timbre_vector)
+        assert logits.shape == (batch, 2)
 
     def test_single_sample_batch(self, model):
         """Should handle batch_size=1."""
@@ -248,3 +271,66 @@ class TestAmyTemporalAlignment:
         assert T.shape[1] == T_moss
         assert T.shape[0] == 1
         assert T.shape[2] == 2560
+
+
+class TestAmyLoopLogic:
+    """Verify the per-sample loop in forward() handles batch_size > 1.
+
+    These tests mock the heavy model components and test the loop logic.
+    """
+
+    class _MockLM(nn.Module):
+        def __init__(self, T_out=25, D_out=2560):
+            super().__init__()
+            self._T_out = T_out
+            self._D_out = D_out
+            self._dummy = nn.Parameter(torch.zeros(1))
+
+        def forward(self, inputs_embeds):
+            B = inputs_embeds.shape[0]
+            out = MagicMock()
+            out.last_hidden_state = torch.randn(B, self._T_out, self._D_out)
+            return out
+
+    @pytest.fixture
+    def mock_modules(self):
+        """Create an AmyForProsodyClassification with mock heavy components."""
+        model = object.__new__(AmyForProsodyClassification)
+        nn.Module.__init__(model)
+        model._device = torch.device("cpu")
+        model.classifier = nn.Linear(2560, 2)
+        model.amy_moss = MagicMock()
+        model.amy_moss.encode_enriched_audio_embeds = MagicMock(
+            return_value=torch.randn(1, 25, 2560)
+        )
+        model.get_language_model = MagicMock(
+            return_value=self._MockLM()
+        )
+        return model
+
+    def test_single_sample_forward(self, mock_modules):
+        B = 1
+        audio = torch.randn(B, 16000)
+        prosody = torch.randint(0, 1024, (B, 1, 80))
+        timbre = torch.randn(B, 256)
+        logits = mock_modules(audio, prosody, timbre)
+        assert logits.shape == (B, 2)
+        assert mock_modules.amy_moss.encode_enriched_audio_embeds.call_count == 1
+
+    def test_batch_3_forward(self, mock_modules):
+        B = 3
+        audio = torch.randn(B, 16000)
+        prosody = torch.randint(0, 1024, (B, 1, 80))
+        timbre = torch.randn(B, 256)
+        logits = mock_modules(audio, prosody, timbre)
+        assert logits.shape == (B, 2)
+        assert mock_modules.amy_moss.encode_enriched_audio_embeds.call_count == B
+
+    def test_batch_8_forward(self, mock_modules):
+        B = 8
+        audio = torch.randn(B, 32000)
+        prosody = torch.randint(0, 1024, (B, 1, 160))
+        timbre = torch.randn(B, 256)
+        logits = mock_modules(audio, prosody, timbre)
+        assert logits.shape == (B, 2)
+        assert mock_modules.amy_moss.encode_enriched_audio_embeds.call_count == B

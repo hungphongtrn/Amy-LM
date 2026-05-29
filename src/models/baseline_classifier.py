@@ -65,13 +65,14 @@ class BaselineClassifier(nn.Module):
         return self.amy_moss.moss.language_model
 
     def forward(self, audio: torch.Tensor) -> torch.Tensor:
-        H = self.amy_moss.encode_enriched_audio_embeds(audio)
-        H = self.norm(H)
-
         language_model = self.get_language_model()
         lm_dtype = next(language_model.parameters()).dtype
-        lm_out = language_model(inputs_embeds=H.to(dtype=lm_dtype)).last_hidden_state
 
-        pooled = lm_out.mean(dim=1)
-        logits = self.classifier(pooled)
-        return logits
+        logits_list = []
+        for i in range(audio.shape[0]):
+            H = self.amy_moss.encode_enriched_audio_embeds(audio[i : i + 1])
+            H = self.norm(H)
+            lm_out = language_model(inputs_embeds=H.to(dtype=lm_dtype)).last_hidden_state
+            pooled = lm_out.mean(dim=1)
+            logits_list.append(self.classifier(pooled))
+        return torch.cat(logits_list, dim=0)
