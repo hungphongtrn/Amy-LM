@@ -154,8 +154,8 @@ class TestLambdaLogging:
         lambdas = trainer._get_lambdas()
         assert "lambda_p" in lambdas
         assert "lambda_t" in lambdas
-        assert lambdas["lambda_p"] == 0.0
-        assert lambdas["lambda_t"] == 0.0
+        assert lambdas["lambda_p"] == 1.0
+        assert lambdas["lambda_t"] == 1.0
 
     def test_baseline_returns_empty_lambdas(self, require_gpu, device):
         from src.models import BaselineClassifier

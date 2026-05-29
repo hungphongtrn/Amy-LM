@@ -51,8 +51,13 @@ class TestResidualFusion:
         out = fusion(semantic, prosody, content, acoustic, timbre)
         assert out.std() < 3.0
 
-    def test_identity_at_init_zero_lambdas(self, fusion):
-        """At init (all λ=0), output == LayerNorm(semantic) regardless of streams."""
+    def test_identity_when_lambdas_set_to_zero(self, fusion):
+        """When all λ manually set to zero, output == LayerNorm(semantic)."""
+        with torch.no_grad():
+            fusion.lambda_p.data.fill_(0.0)
+            fusion.lambda_c.data.fill_(0.0)
+            fusion.lambda_a.data.fill_(0.0)
+            fusion.lambda_t.data.fill_(0.0)
         semantic = make_semantic(batch=1, seq=10)
         prosody = torch.randn(1, 10, HIDDEN_DIM) * 100
         content = torch.randn(1, 10, HIDDEN_DIM) * 100
@@ -65,12 +70,12 @@ class TestResidualFusion:
         )
         assert torch.allclose(out, expected, atol=1e-5)
 
-    def test_all_lambdas_initialized_at_zero(self, fusion):
-        """All per-stream lambdas start at zero."""
-        assert fusion.lambda_p.item() == 0.0
-        assert fusion.lambda_c.item() == 0.0
-        assert fusion.lambda_a.item() == 0.0
-        assert fusion.lambda_t.item() == 0.0
+    def test_all_lambdas_initialized_at_one(self, fusion):
+        """All per-stream lambdas start at one."""
+        assert fusion.lambda_p.item() == 1.0
+        assert fusion.lambda_c.item() == 1.0
+        assert fusion.lambda_a.item() == 1.0
+        assert fusion.lambda_t.item() == 1.0
 
     def test_each_lambda_independently_learnable(self, fusion):
         """Each lambda can be set independently and affects output."""
@@ -80,15 +85,16 @@ class TestResidualFusion:
         acoustic = make_acoustic(batch=2, seq=10)
         timbre = make_timbre(batch=2, seq=10)
         
-        # Set only prosody lambda
         with torch.no_grad():
             fusion.lambda_p.data.fill_(0.5)
+            fusion.lambda_c.data.fill_(0.0)
+            fusion.lambda_a.data.fill_(0.0)
+            fusion.lambda_t.data.fill_(0.0)
         
         out = fusion(semantic, prosody, content, acoustic, timbre)
         
-        # With only prosody enabled, should be: LayerNorm(semantic + 0.5 * prosody)
         expected = torch.nn.functional.layer_norm(
-            semantic + 0.5 * prosody, (HIDDEN_DIM,), 
+            semantic + 0.5 * fusion.norm_p(prosody), (HIDDEN_DIM,), 
             weight=fusion.norm.weight, bias=fusion.norm.bias, eps=1e-5
         )
         assert torch.allclose(out, expected, atol=1e-5)
@@ -142,7 +148,7 @@ class TestResidualFusion:
         
         out = fusion(semantic, prosody=prosody, content=None, acoustic=None, timbre=None)
         expected = torch.nn.functional.layer_norm(
-            semantic + 0.5 * prosody, (HIDDEN_DIM,),
+            semantic + 0.5 * fusion.norm_p(prosody), (HIDDEN_DIM,),
             weight=fusion.norm.weight, bias=fusion.norm.bias, eps=1e-5
         )
         assert torch.allclose(out, expected, atol=1e-5)
@@ -152,13 +158,15 @@ class TestResidualFusion:
         semantic = make_semantic(batch=2, seq=10)
         prosody = make_prosody(batch=2, seq=10)
         
-        # Even if prosody lambda is zero, setting content/acoustic/timbre to None
-        # should yield same result as just prosody
+        with torch.no_grad():
+            fusion.lambda_c.data.fill_(0.0)
+            fusion.lambda_a.data.fill_(0.0)
+            fusion.lambda_t.data.fill_(0.0)
+        
         out_with_nones = fusion(
             semantic, prosody=prosody, content=None, acoustic=None, timbre=None
         )
         
-        # Create dummy streams (but with lambda_c/a/t = 0 they shouldn't contribute)
         content = make_content(batch=2, seq=10)
         acoustic = make_acoustic(batch=2, seq=10)
         timbre = make_timbre(batch=2, seq=10)
@@ -167,7 +175,6 @@ class TestResidualFusion:
             semantic, prosody=prosody, content=content, acoustic=acoustic, timbre=timbre
         )
         
-        # Both should be identical since lambdas for c/a/t are 0
         assert torch.allclose(out_with_nones, out_with_zeros, atol=1e-5)
 
     def test_timbre_pre_broadcast_required(self):
@@ -219,9 +226,10 @@ class TestResidualFusion:
         
         with torch.no_grad():
             fusion.lambda_p.data.fill_(0.3)
+            fusion.lambda_c.data.fill_(0.0)
             fusion.lambda_a.data.fill_(0.7)
+            fusion.lambda_t.data.fill_(0.0)
         
-        # Only prosody and acoustic enabled
         out = fusion(
             semantic, 
             prosody=prosody, 
@@ -231,7 +239,7 @@ class TestResidualFusion:
         )
         
         expected = torch.nn.functional.layer_norm(
-            semantic + 0.3 * prosody + 0.7 * acoustic, (HIDDEN_DIM,),
+            semantic + 0.3 * fusion.norm_p(prosody) + 0.7 * fusion.norm_a(acoustic), (HIDDEN_DIM,),
             weight=fusion.norm.weight, bias=fusion.norm.bias, eps=1e-5
         )
         assert torch.allclose(out, expected, atol=1e-5)

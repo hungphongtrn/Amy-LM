@@ -173,15 +173,17 @@ class TestAmyBaselineEquivalence:
     def timbre_vector(self):
         return torch.randn(1, 256)
 
-    def test_lambdas_start_at_zero(self, model):
-        """lambda_p and lambda_t must be zero at initialization."""
-        assert model.amy_moss.residual_fusion.lambda_p.item() == 0.0
-        assert model.amy_moss.residual_fusion.lambda_t.item() == 0.0
+    def test_lambdas_start_at_one(self, model):
+        """lambda_p and lambda_t must be one at initialization."""
+        assert model.amy_moss.residual_fusion.lambda_p.item() == 1.0
+        assert model.amy_moss.residual_fusion.lambda_t.item() == 1.0
 
     def test_semantic_alone_equals_baseline(self, model, audio, prosody_indices, timbre_vector):
-        """With lambdas=0 and prosody/timbre fed, output should equal
+        """With lambdas manually set to 0 and prosody/timbre fed, output should equal
         running only semantic through the same path."""
         with torch.no_grad():
+            model.amy_moss.residual_fusion.lambda_p.data.fill_(0.0)
+            model.amy_moss.residual_fusion.lambda_t.data.fill_(0.0)
             semantic, _ = model.amy_moss.encode_enriched_audio_embeds(audio)
         semantic = semantic.float()
         T_moss = semantic.shape[1]

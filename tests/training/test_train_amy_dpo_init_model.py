@@ -77,9 +77,7 @@ def test_dpo_forward_backward_gradient_flow(monkeypatch, device, require_gpu):
     Requires GPU for speed — the tiny model still runs a real WhisperEncoder
     forward and Qwen3Model forward, which are too heavy on CPU.
 
-    Lambda gates start at zero (by design), so prosody_embedding and
-    timbre_projection gradients are mathematically zero at init. We set
-    lambda_p/t = 1.0 to prove the full gradient path exists.
+    Lambda gates start at one, so FACodec module gradients flow through naturally.
 
     Uses the same _tiny_moss() mock as the static init test above.
     """
