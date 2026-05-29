@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from scripts import train_amy_dpo
@@ -64,10 +65,13 @@ def test_dpo_init_model_keeps_facodec_trainable_and_scopes_lora_to_qwen(monkeypa
     assert not any("moss.audio_adapter" in name and "lora_" in name for name in trainable)
 
 
-def test_dpo_forward_backward_gradient_flow(monkeypatch):
-    """Fast CPU test: DPO model forward-backward produces non-zero grads on
+def test_dpo_forward_backward_gradient_flow(monkeypatch, device, require_gpu):
+    """GPU test: DPO model forward-backward produces non-zero grads on
     LoRA adapters and FACodec gate params, while frozen audio encoder/adapter
     and LM base weights get None grads.
+
+    Requires GPU for speed — the tiny model still runs a real WhisperEncoder
+    forward and Qwen3Model forward, which are too heavy on CPU.
 
     Lambda gates start at zero (by design), so prosody_embedding and
     timbre_projection gradients are mathematically zero at init. We set
@@ -78,12 +82,13 @@ def test_dpo_forward_backward_gradient_flow(monkeypatch):
     monkeypatch.setattr(
         train_amy_dpo.MossAudioModel,
         "from_pretrained",
-        lambda *args, **kwargs: _tiny_moss(),
+        lambda *args, **kwargs: _tiny_moss().to(device),
     )
 
     model = train_amy_dpo.init_model(
         DPOTrainingConfig(lora_r=2, lora_alpha=4, lora_dropout=0.0)
     )
+    model = model.to(device)
     model.train()
     torch.manual_seed(0)
 
@@ -95,19 +100,19 @@ def test_dpo_forward_backward_gradient_flow(monkeypatch):
     B, S = 1, 8
     mel_len = 20
 
-    input_ids = torch.randint(0, 63, (B, S))
-    attention_mask = torch.ones(B, S, dtype=torch.long)
+    input_ids = torch.randint(0, 63, (B, S), device=device)
+    attention_mask = torch.ones(B, S, dtype=torch.long, device=device)
     labels = input_ids.clone()
 
-    audio_data = torch.randn(B, 128, mel_len)
-    audio_data_seqlens = torch.full((B,), mel_len, dtype=torch.long)
+    audio_data = torch.randn(B, 128, mel_len, device=device)
+    audio_data_seqlens = torch.full((B,), mel_len, dtype=torch.long, device=device)
 
     # 3 audio tokens after conv3 downsampling of mel_len=20
-    audio_input_mask = torch.zeros(B, S, dtype=torch.bool)
+    audio_input_mask = torch.zeros(B, S, dtype=torch.bool, device=device)
     audio_input_mask[0, 2:5] = True
 
-    prosody_indices = torch.randint(0, 1024, (B, 1, 20))
-    timbre_vector = torch.randn(B, 256)
+    prosody_indices = torch.randint(0, 1024, (B, 1, 20), device=device)
+    timbre_vector = torch.randn(B, 256, device=device)
 
     output = model(
         input_ids=input_ids,
