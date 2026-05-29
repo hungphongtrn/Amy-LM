@@ -28,6 +28,10 @@ from peft import LoraConfig, TaskType, get_peft_model
 from trl import DPOConfig
 
 # Add src path
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 _SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
@@ -39,12 +43,12 @@ _VENDOR_SRC = os.path.abspath(
 if _VENDOR_SRC not in sys.path:
     sys.path.insert(0, _VENDOR_SRC)
 
-from modeling_moss_audio import MossAudioModel
 from processing_moss_audio import MossAudioProcessor
-from models.amy_lm import AmyMossLM, AmyMossLMConfig
-from training.amy_dpo_trainer import AmyDPOTrainer
-from training.config import DPOTrainingConfig, register_config_arg, resolve_config
-from training.dpo_collator import DPOCollator
+from src.models.moss_audio_model import MossAudioModel
+from src.models.amy_lm import AmyMossLM, AmyMossLMConfig
+from src.training.amy_dpo_trainer import AmyDPOTrainer
+from src.training.config import DPOTrainingConfig, register_config_arg, resolve_config
+from src.training.dpo_collator import DPOCollator
 
 
 def parse_config(raw_args: list[str] | None = None) -> DPOTrainingConfig:
@@ -161,8 +165,8 @@ def init_model(config: DPOTrainingConfig):
     wraps in AmyMossLM composition via AmyMossLM(config, moss=moss_4bit).
     No __class__ mutation, no _upgrade_from_moss hack.
 
-    LoRA is scoped to MossAudioModel backbone only via target_modules regex
-    (^moss\..*), leaving FACodec modules fully trainable at full precision.
+    LoRA is scoped to Qwen3 language_model modules only. FACodec modules are
+    registered as modules_to_save so PEFT keeps them trainable and checkpointed.
     """
     moss = MossAudioModel.from_pretrained(
         config.model,
@@ -173,6 +177,7 @@ def init_model(config: DPOTrainingConfig):
     )
     amy_config = AmyMossLMConfig(
         moss_config=moss.config,
+        hidden_dim=moss.config.language_config.hidden_size,
         freeze_audio_encoder=True,
         freeze_audio_adapter=True,
         freeze_llm=True,
@@ -187,7 +192,13 @@ def init_model(config: DPOTrainingConfig):
         r=config.lora_r,
         lora_alpha=config.lora_alpha,
         lora_dropout=config.lora_dropout,
-        target_modules=r"^moss\..*\.(q_proj|k_proj|v_proj|o_proj|up_proj|down_proj|gate_proj)$",
+        target_modules=r"^moss\.language_model\..*\.(q_proj|k_proj|v_proj|o_proj|up_proj|down_proj|gate_proj)$",
+        modules_to_save=[
+            "prosody_embedding",
+            "timbre_projection",
+            "temporal_pool",
+            "residual_fusion",
+        ],
         bias="none",
         task_type=TaskType.CAUSAL_LM,
     )

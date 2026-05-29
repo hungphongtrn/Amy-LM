@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from src.models.amy_classifier import AmyForProsodyClassification
+from src.models.amy_lm import AmyMossLM, AmyMossLMConfig
 
 
 def make_prosody_codebook_vectors():
@@ -340,3 +341,83 @@ class TestAmyLoopLogic:
         logits = mock_modules(audio, prosody, timbre)
         assert logits.shape == (B, 2)
         assert mock_modules.amy_moss.encode_enriched_audio_embeds.call_count == 1
+
+
+def test_classifier_forward_keeps_gradient_path_through_frozen_lm():
+    """Fast regression for script train_29_amy.py's classifier gradient path.
+
+    Frozen LM parameters must not receive gradients, but their forward pass must
+    remain differentiable so classifier loss can update FACodec enrichment.
+    """
+    config = AmyMossLMConfig(
+        moss_config={
+            "language_config": {
+                "vocab_size": 32,
+                "hidden_size": 8,
+                "num_hidden_layers": 1,
+                "intermediate_size": 16,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 1,
+            },
+            "audio_config": {
+                "d_model": 8,
+                "output_dim": 8,
+                "encoder_layers": 1,
+                "encoder_attention_heads": 2,
+                "deepstack_encoder_layer_indexes": [],
+            },
+        },
+        hidden_dim=8,
+        prosody_vocab_size=16,
+        timbre_dim=4,
+    )
+    amy_moss = AmyMossLM(config)
+    amy_moss.residual_fusion.lambda_p.data.fill_(1.0)
+    amy_moss.residual_fusion.lambda_t.data.fill_(1.0)
+
+    class _Processor:
+        def _extract_mel(self, audio):
+            return torch.ones(128, 16)
+
+    def _fake_get_audio_features(audio_data, audio_data_seqlens):
+        return torch.zeros(1, 2, config.hidden_dim), None
+
+    class _FrozenLM(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
+            for param in self.parameters():
+                param.requires_grad = False
+
+        def forward(self, inputs_embeds, attention_mask=None):
+            out = MagicMock()
+            out.last_hidden_state = self.linear(inputs_embeds.float())
+            return out
+
+    amy_moss._get_processor = lambda: _Processor()
+    amy_moss.moss.get_audio_features = _fake_get_audio_features
+    amy_moss.moss.audio_adapter = nn.Identity()
+
+    classifier = object.__new__(AmyForProsodyClassification)
+    nn.Module.__init__(classifier)
+    classifier.amy_moss = amy_moss
+    classifier.classifier = nn.Linear(config.hidden_dim, 2)
+    frozen_lm = _FrozenLM()
+    classifier.get_language_model = lambda: frozen_lm
+
+    logits = classifier(
+        torch.randn(1, 16000),
+        torch.randint(0, config.prosody_vocab_size, (1, 1, 13)),
+        torch.randn(1, config.timbre_dim),
+    )
+    loss = nn.CrossEntropyLoss()(logits, torch.tensor([1]))
+    loss.backward()
+
+    assert classifier.classifier.weight.grad is not None
+    assert amy_moss.prosody_embedding.embedding.weight.grad is not None
+    assert amy_moss.prosody_embedding.embedding.weight.grad.abs().sum() > 0
+    assert amy_moss.timbre_projection.linear.weight.grad is not None
+    assert amy_moss.timbre_projection.linear.weight.grad.abs().sum() > 0
+    assert amy_moss.residual_fusion.lambda_p.grad is not None
+    assert amy_moss.residual_fusion.lambda_t.grad is not None
+    assert frozen_lm.linear.weight.grad is None
