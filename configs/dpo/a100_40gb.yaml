@@ -1,0 +1,51 @@
+# Optimized config for single A100 40GB.
+# Strategy: bf16 MOSS-Audio backbone, fp32 FACodec modules, LoRA adapters,
+# and 8-bit optimizer states. No 4-bit model quantization.
+
+model: OpenMOSS-Team/MOSS-Audio-4B-Thinking
+dataset: hungphongtrn/nvtts_facodec
+cosine_threshold: 0.85
+
+# ── LoRA ────────────────────────────────────────────────────────────────────
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+
+# ── DPO ─────────────────────────────────────────────────────────────────────
+beta: 0.1
+precompute_ref_batch_size: 8              # Reference pass has no backward graph.
+
+# ── Optimization ────────────────────────────────────────────────────────────
+learning_rate: 1e-4
+warmup_ratio: 0.1
+max_length: 1024                          # Use full context on A100 40GB.
+per_device_batch_size: 2                  # Raise to 3 only after confirming VRAM headroom.
+gradient_accumulation_steps: 4            # Effective batch = 2×4 = 8.
+num_epochs: 3.0
+max_grad_norm: 1.0
+optim: paged_adamw_8bit                   # 8-bit optimizer states; backbone is not quantized.
+
+# ── Logging & Checkpointing ─────────────────────────────────────────────────
+output_dir: ./output/amy_dpo_a100_40gb
+logging_steps: 10
+save_steps: 100
+eval_steps: 100
+save_total_limit: 3
+wandb_project: amy-lm-dpo
+wandb_run_name: a100_40gb_lora_r16_a32_1024_length
+no_wandb: false
+
+seed: 42
+gradient_checkpointing: true
+
+# ── VRAM Notes ──────────────────────────────────────────────────────────────
+# Expected memory drivers:
+#   MOSS-Audio 4B (bf16)        ~8 GB
+#   Activations at 1024 tokens  dominant remaining cost; gradient checkpointing enabled
+#   FACodec modules (fp32)      small relative to backbone
+#   Optimizer states            8-bit via paged_adamw_8bit
+#
+# If OOM, try in order:
+#   1. per_device_batch_size: 1
+#   2. max_length: 768
+#   3. precompute_ref_batch_size: 4

@@ -44,7 +44,7 @@ def _unwrap_amy(base) -> torch.nn.Module:
 
 
 def test_dpo_init_model_keeps_facodec_trainable_and_scopes_lora_to_qwen(monkeypatch):
-    """Fast regression for script train_27_dpo.py's QLoRA setup.
+    """Fast regression for script train_27_dpo.py's LoRA setup.
 
     DPO should train Qwen3 LoRA adapters plus FACodec modules. Audio encoder and
     audio adapter must remain frozen, including no accidental LoRA adapters.

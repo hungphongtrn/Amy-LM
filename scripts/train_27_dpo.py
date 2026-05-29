@@ -8,7 +8,7 @@ Usage:
 
 HF assets:
     hungphongtrn/nvtts_facodec           — DPO training data (~3600 samples)
-    OpenMOSS-Team/MOSS-Audio-4B-Thinking — 4B backbone (loaded in 4-bit NF4)
+    OpenMOSS-Team/MOSS-Audio-4B-Thinking — 4B backbone (loaded in bf16)
 
 Output:
     output/amy_dpo/  — checkpoints + final model
@@ -33,6 +33,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--cosine-threshold", type=float, default=None)
     p.add_argument("--num-epochs", type=float, default=None)
     p.add_argument("--lora-r", type=int, default=None)
+    p.add_argument("--optim", default=None)
     p.add_argument("--device", default="cuda")
     return p.parse_args(argv)
 
@@ -54,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
         cmd.extend(["--num-epochs", str(args.num_epochs)])
     if args.lora_r is not None:
         cmd.extend(["--lora-r", str(args.lora_r)])
+    if args.optim is not None:
+        cmd.extend(["--optim", args.optim])
     cmd = [a for a in cmd if a]
 
     print(f"Running: {' '.join(cmd[1:])}\n")

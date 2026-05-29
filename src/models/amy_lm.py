@@ -221,6 +221,8 @@ class AmyMossLM(PreTrainedModel, GenerationMixin):
             return audio_embeds
 
         streams: dict[str, torch.Tensor] = {}
+        fusion_dtype = self.residual_fusion.norm.weight.dtype
+        semantic = audio_embeds.to(dtype=fusion_dtype)
 
         if prosody_indices is not None:
             p_emb = self.prosody_embedding(prosody_indices)
@@ -236,20 +238,23 @@ class AmyMossLM(PreTrainedModel, GenerationMixin):
                 p_emb = torch.cat([p_emb, pad], dim=1)
             elif p_emb.shape[1] > audio_embeds.shape[1]:
                 p_emb = p_emb[:, : audio_embeds.shape[1], :]
-            streams["prosody"] = p_emb.to(device=audio_embeds.device, dtype=audio_embeds.dtype)
+            streams["prosody"] = p_emb.to(device=audio_embeds.device, dtype=fusion_dtype)
 
         if timbre_vector is not None:
+            timbre_dtype = self.timbre_projection.linear.weight.dtype
+            timbre_vector = timbre_vector.to(dtype=timbre_dtype)
             t_emb = self.timbre_projection(timbre_vector)
             t_emb = t_emb.unsqueeze(1).expand(-1, audio_embeds.shape[1], -1)
-            streams["timbre"] = t_emb.to(device=audio_embeds.device, dtype=audio_embeds.dtype)
+            streams["timbre"] = t_emb.to(device=audio_embeds.device, dtype=fusion_dtype)
 
-        return self.residual_fusion(
-            audio_embeds,
+        fused = self.residual_fusion(
+            semantic,
             prosody=streams.get("prosody"),
             content=None,
             acoustic=None,
             timbre=streams.get("timbre"),
         )
+        return fused.to(dtype=audio_embeds.dtype)
 
     def _get_processor(self):
         if self._processor is None:

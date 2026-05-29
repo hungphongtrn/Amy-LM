@@ -5,7 +5,7 @@ model: OpenMOSS-Team/MOSS-Audio-4B-Thinking
 dataset: hungphongtrn/nvtts_facodec
 cosine_threshold: 0.85
 
-# ── QLoRA (minimal for debug) ───────────────────────────────────────────────
+# ── LoRA (minimal for debug) ────────────────────────────────────────────────
 lora_r: 4                                # Minimal rank for fast init
 lora_alpha: 8                            # 2× r
 lora_dropout: 0.0                        # No dropout for deterministic debug

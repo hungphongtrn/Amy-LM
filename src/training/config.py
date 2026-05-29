@@ -25,7 +25,7 @@ class DPOTrainingConfig:
     dataset: str = "hungphongtrn/nvtts_facodec"
     cosine_threshold: float = 0.85
 
-    # ── QLoRA ───────────────────────────────────────────────────────────
+    # ── LoRA ────────────────────────────────────────────────────────────
     lora_r: int = 8
     lora_alpha: int = 16
     lora_dropout: float = 0.05
@@ -42,6 +42,7 @@ class DPOTrainingConfig:
     gradient_accumulation_steps: int = 4
     num_epochs: float = 3.0
     max_grad_norm: float = 1.0
+    optim: str = "paged_adamw_8bit"
 
     # ── Logging & Checkpointing ─────────────────────────────────────────
     output_dir: str = "./output/amy_dpo"

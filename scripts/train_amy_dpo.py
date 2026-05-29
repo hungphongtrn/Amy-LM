@@ -81,7 +81,7 @@ def parse_config(raw_args: list[str] | None = None) -> DPOTrainingConfig:
         help="Filter samples with cosine_similarity < threshold",
     )
 
-    # QLoRA
+    # LoRA
     parser.add_argument("--lora-r", type=int, default=DPOTrainingConfig.lora_r, help="LoRA rank")
     parser.add_argument("--lora-alpha", type=int, default=DPOTrainingConfig.lora_alpha, help="LoRA alpha")
     parser.add_argument("--lora-dropout", type=float, default=DPOTrainingConfig.lora_dropout, help="LoRA dropout")
@@ -103,6 +103,7 @@ def parse_config(raw_args: list[str] | None = None) -> DPOTrainingConfig:
         "--max-length", type=int, default=DPOTrainingConfig.max_length, help="Max sequence length"
     )
     parser.add_argument("--max-grad-norm", type=float, default=DPOTrainingConfig.max_grad_norm)
+    parser.add_argument("--optim", default=DPOTrainingConfig.optim, help="HF Trainer optimizer name")
 
     # Logging & checkpointing
     parser.add_argument("--output-dir", default=DPOTrainingConfig.output_dir, help="Output directory")
@@ -159,21 +160,21 @@ def load_and_filter_dataset(dataset_id: str, cosine_threshold: float, num_sample
 
 
 def init_model(config: DPOTrainingConfig):
-    """Initialize AmyMossLM with 4-bit quantized backbone via constructor injection.
+    """Initialize AmyMossLM with a bf16 backbone via constructor injection.
 
-    Loads MossAudioModel (backbone only) with load_in_4bit=True, then
-    wraps in AmyMossLM composition via AmyMossLM(config, moss=moss_4bit).
+    Loads MossAudioModel (backbone only) in bf16, then wraps it in AmyMossLM
+    composition via AmyMossLM(config, moss=moss).
     No __class__ mutation, no _upgrade_from_moss hack.
 
     LoRA is scoped to Qwen3 language_model modules only. FACodec modules are
-    registered as modules_to_save so PEFT keeps them trainable and checkpointed.
+    kept in fp32, then registered as modules_to_save so PEFT keeps them
+    trainable and checkpointed.
     """
     moss = MossAudioModel.from_pretrained(
         config.model,
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
-        load_in_4bit=True,
     )
     amy_config = AmyMossLMConfig(
         moss_config=moss.config,
@@ -183,6 +184,13 @@ def init_model(config: DPOTrainingConfig):
         freeze_llm=True,
     )
     model = AmyMossLM(amy_config, moss=moss)
+    for module in (
+        model.prosody_embedding,
+        model.timbre_projection,
+        model.temporal_pool,
+        model.residual_fusion,
+    ):
+        module.to(dtype=torch.float32)
 
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total = sum(p.numel() for p in model.parameters())
@@ -240,6 +248,7 @@ def build_dpo_config(config: DPOTrainingConfig) -> DPOConfig:
         gradient_accumulation_steps=config.gradient_accumulation_steps,
         max_length=config.max_length,
         max_grad_norm=config.max_grad_norm,
+        optim=config.optim,
         num_train_epochs=config.num_epochs,
         bf16=True,
         gradient_checkpointing=config.gradient_checkpointing,

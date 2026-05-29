@@ -5,7 +5,7 @@ model: OpenMOSS-Team/MOSS-Audio-4B-Thinking
 dataset: hungphongtrn/nvtts_facodec
 cosine_threshold: 0.85
 
-# ── QLoRA (capacity-optimized for 12GB) ─────────────────────────────────────
+# ── LoRA (capacity-optimized for 12GB) ──────────────────────────────────────
 lora_r: 16                               # Rank 16 — good capacity/VRAM tradeoff on 12GB
 lora_alpha: 32                           # Standard 2× r scaling
 lora_dropout: 0.05                       # Light regularization
@@ -17,7 +17,7 @@ precompute_ref_batch_size: 4              # Larger batch for ref precomputation 
                                           # Speeds up the ~35-min ref log-prob precompute by 4×
 
 # ── Optimization (VRAM-tuned) ───────────────────────────────────────────────
-learning_rate: 1e-4                    # Conservative LR for QLoRA
+learning_rate: 1e-4                    # Conservative LR for LoRA
 warmup_ratio: 0.1                        # Linear warmup over first 10% of steps
 max_length: 512                         # Sequence length — critical VRAM lever
                                           # 1024 fits ~8s audio + prompt comfortably on 12GB
@@ -27,6 +27,7 @@ gradient_accumulation_steps: 8           # Effective batch = 1×8 = 8
                                           # Higher = better gradient estimates, zero VRAM cost
 num_epochs: 3.0                          # 3 epochs on ~3600 samples ≈ 10800 steps total
 max_grad_norm: 1.0                       # Gradient clipping
+optim: paged_adamw_8bit                  # 8-bit optimizer states; backbone is not quantized
 
 # ── Logging & Checkpointing ─────────────────────────────────────────────────
 output_dir: ./output/amy_dpo_rtx3060
@@ -42,7 +43,7 @@ seed: 42
 
 # ── VRAM Notes ──────────────────────────────────────────────────────────────
 # 12GB breakdown (approximate):
-#   MOSS-Audio 4B (4-bit NF4)   ~2.5 GB
+#   MOSS-Audio 4B (bf16)        ~8.0 GB
 #   LoRA adapters (bf16)        ~0.3 GB  (rank 16 on all-linear)
 #   AmyLM embeddings + fusion   ~0.1 GB
 #   Optimizer states (8-bit)    ~1.0 GB  (paged_adamw_8bit)
@@ -50,7 +51,7 @@ seed: 42
 #   Forward pass                ~1.5 GB  (audio mel, prosody/timbre vecs)
 #   Buffer / fragmentation      ~2.0 GB
 #   ─────────────────────────────────
-#   Total                       ~11.4 GB ✓
+#   Total                       >12 GB; prefer configs/dpo/a100_40gb.yaml for bf16 backbone runs
 #
 # If OOM, try in order:
 #   1. Reduce max_length → 768 or 512  (cuts sequence memory linearly)

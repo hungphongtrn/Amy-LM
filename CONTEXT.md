@@ -124,7 +124,7 @@ Custom HF data collator for AmyLM DPO training. Converts raw `nvtts_facodec` row
 _Avoid_: DPO data loader, preference collator
 
 **AmyDPOTrainer**:
-Subclass of `trl.DPOTrainer` for AmyLM. Overrides `concatenated_forward()` to duplicate non-text inputs (`audio_data`, `audo_data_seqlens`, `audio_input_mask`, `prosody_indices`, `timbre_vector`) along the batch dimension (B → 2*B) before calling `model()`. Same audio/prosody/timbre for chosen and rejected since they share the speech input. Policy model trained with QLoRA on 4-bit MOSS-Audio backbone + full-precision FACodec modules; reference model is a frozen AmyLM snapshot at initialization (zero λ → equivalent to MOSS-Audio). Gradients flow only through FACodec modules and LoRA adapters; audio encoder, audio adapter, and LM head frozen.
+Subclass of `trl.DPOTrainer` for AmyLM. Overrides `concatenated_forward()` to duplicate non-text inputs (`audio_data`, `audo_data_seqlens`, `audio_input_mask`, `prosody_indices`, `timbre_vector`) along the batch dimension (B → 2*B) before calling `model()`. Same audio/prosody/timbre for chosen and rejected since they share the speech input. Policy model trained with LoRA on a bf16 MOSS-Audio backbone + fp32 FACodec modules; reference model is a frozen AmyLM snapshot at initialization (zero λ → equivalent to MOSS-Audio). Gradients flow only through FACodec modules and LoRA adapters; audio encoder, audio adapter, and LM head frozen.
 _Avoid_: preference trainer, contrastive trainer
 
 **Concatenated Forward (AmyLM DPO)**:
@@ -139,9 +139,9 @@ _Avoid_: base model, pre-trained reference
 The uniform prompt used for all DPO training samples: "You are a helpful assistant. Listen carefully to the speaker's tone and respond appropriately to the following speech: `<audo>`". The `<audio>` placeholder (regex `<|audio_bos|>(?:<|AUDIO|>)+<|audio_eos|>`) is expanded to N × `<|AUDIO|>` tokens (12.5 per second of audio) by MOSS-Audio's processor. No sample-specific text cues — the model must derive prosody and timbre from the speech signal alone.
 _Avoid_: instruction prompt, task prompt
 
-**QLoRA (DPO)**:
-4-bit quantized MOSS-Audio backbone (NF4 via bitsandbytes) with LoRA adapters on all Qwen3 linear layers (`q_proj`, `k_proj`, `v_proj`, `o_proj`, `up_proj`, `down_proj`, `gate_proj`). LoRA rank, alpha, and dropout are configurable hyperparameters. FACodec modules (prosody_embedding, timbre_projection, λ gates) trained in full precision. Uses bf16 mixed precision with gradient checkpointing on Qwen3 backbone. Optimizer: paged_adamw_8bit for quantized + LoRA params, regular AdamW for FACodec modules.
-_Avoid_: full fine-tune, 8-bit only
+**LoRA (DPO)**:
+bf16 MOSS-Audio backbone with LoRA adapters on all Qwen3 linear layers (`q_proj`, `k_proj`, `v_proj`, `o_proj`, `up_proj`, `down_proj`, `gate_proj`). LoRA rank, alpha, and dropout are configurable hyperparameters. FACodec modules (prosody_embedding, timbre_projection, λ gates) train in fp32. Uses bf16 mixed precision with gradient checkpointing on Qwen3 backbone. Optimizer states may use `paged_adamw_8bit`; the backbone itself is not 4-bit quantized.
+_Avoid_: full fine-tune, QLoRA, 4-bit backbone
 
 **NVTTS-FACodec DPO Split**:
 Training data pipeline: load `hungphongtrn/nvtts_facodec` → filter by `cosine_similarity < threshold` (default 0.85) → use existing NVTTS splits (train: 3641, dev: 46, test: 359). Content and acoustic streams present in dataset but excluded from DPO collation. Threshold is a configurable hyperparameter; the full dataset is kept intact, split applied post-filter.
@@ -185,7 +185,7 @@ _Avoid_: Ablation grid, experiment table
 - **DPO** trains **AmyMossLM** via **AmyDPOTrainer** (subclass of `trl.DPOTrainer`), computing per-token log-probabilities of chosen vs. rejected responses on Qwen3's full vocabulary
 - **DPOCollator** produces batches from **NVTTS-FACodec Dataset** rows; **AmyDPOTrainer** uses **Concatenated Forward (AmyLM DPO)** to pass shared audio/prosody/timbre through duplicated batch dimension
 - **DPO Reference Model** is a frozen **AmyMossLM** snapshot at step 0; λ=0 makes it functionally equivalent to **MOSS-Audio** at training start
-- **QLoRA (DPO)** freezes the 4-bit **MOSS-Audio** backbone and trains LoRA adapters + full-precision FACodec modules; LoRA `target_modules` uses regex scoped to `moss.*` prefix to avoid touching FACodec linear layers
+- **LoRA (DPO)** freezes the bf16 **MOSS-Audio** backbone and trains LoRA adapters + fp32 FACodec modules; LoRA `target_modules` uses regex scoped to `moss.*` prefix to avoid touching FACodec linear layers
 - **NVTTS-FACodec DPO Split** applies cosine similarity filter to the full **NVTTS-FACodec Dataset** while preserving original train/dev/test splits
 - **DPO System Prompt** is uniform across all samples; the model receives no sample-specific text cues
 - **LLM-as-Judge** evaluates **Social Deafness** improvement by comparing pre/post **DPO** response appropriateness on held-out samples
