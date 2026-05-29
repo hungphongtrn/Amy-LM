@@ -260,7 +260,6 @@ class AmyMossLM(PreTrainedModel, GenerationMixin):
             )
         return self._processor
 
-    @torch.no_grad()
     def encode_enriched_audio_embeds(
         self,
         audio: torch.Tensor,
@@ -306,8 +305,9 @@ class AmyMossLM(PreTrainedModel, GenerationMixin):
                 [mel.shape[-1]], dtype=torch.long, device=device
             )
 
-            audio_embeds, _ = self.moss.get_audio_features(audio_data, audio_data_seqlens)
-            audio_embeds = self.moss.audio_adapter(audio_embeds)
+            with torch.no_grad():
+                audio_embeds, _ = self.moss.get_audio_features(audio_data, audio_data_seqlens)
+                audio_embeds = self.moss.audio_adapter(audio_embeds)
 
             embedded = self.enrich_audio_embeds(
                 audio_embeds,

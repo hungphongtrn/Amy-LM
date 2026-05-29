@@ -1,5 +1,6 @@
 """Tests for AmyMossLM — composition-based Speech LM (Issue #26)."""
 import os
+
 import pytest
 import torch
 
@@ -162,6 +163,49 @@ class TestAmyMossLMModelStructure:
     def test_moss_audio_encoder_frozen_separately(self, model):
         for p in model.moss.audio_encoder.parameters():
             assert not p.requires_grad
+
+
+class TestAmyMossLMEncodeEnrichedAudioEmbeds:
+    def test_facodec_enrichment_keeps_gradient_path_with_frozen_backbone(self):
+        config = _tiny_config(
+            hidden_dim=8,
+            prosody_vocab_size=16,
+            timbre_dim=4,
+            language_config={
+                "hidden_size": 8,
+                "intermediate_size": 32,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 1,
+            },
+            audio_config={"d_model": 8, "output_dim": 8},
+        )
+        model = AmyMossLM(config)
+
+        class _Processor:
+            def _extract_mel(self, audio):
+                return torch.ones(128, 16)
+
+        def _fake_get_audio_features(audio_data, audio_data_seqlens):
+            return torch.zeros(1, 2, config.hidden_dim), None
+
+        model._get_processor = lambda: _Processor()
+        model.moss.get_audio_features = _fake_get_audio_features
+        model.moss.audio_adapter = torch.nn.Identity()
+
+        audio = torch.randn(1, 16000)
+        prosody_indices = torch.randint(0, config.prosody_vocab_size, (1, 1, 13))
+        timbre_vector = torch.randn(1, config.timbre_dim)
+
+        embeds, _ = model.encode_enriched_audio_embeds(
+            audio,
+            prosody_indices=prosody_indices,
+            timbre_vector=timbre_vector,
+        )
+        assert embeds.requires_grad
+
+        embeds.sum().backward()
+        assert model.residual_fusion.lambda_p.grad is not None
+        assert model.residual_fusion.lambda_t.grad is not None
 
 
 class TestAmyMossLMConstructorInjection:
