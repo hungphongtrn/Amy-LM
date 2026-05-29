@@ -15,6 +15,7 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -165,45 +166,49 @@ def main():
     # Training loop
     best_val_acc = 0.0
     epochs_no_improve = 0
-    for epoch in range(1, args.epochs + 1):
-        print(f"\n--- Epoch {epoch}/{args.epochs} ---")
+    epoch_bar = tqdm(range(1, args.epochs + 1), desc="Epoch", unit="ep")
+    for epoch in epoch_bar:
         train_metrics = trainer.train_epoch(train_loader)
-        print(
-            f"Train | Loss: {train_metrics['train_loss']:.4f} | "
-            f"Acc: {train_metrics['train_accuracy']:.3f} | "
-            f"F1: {train_metrics['train_f1']:.3f}"
+        val_metrics = trainer.evaluate(val_loader)
+
+        epoch_bar.set_postfix(
+            train_loss=f"{train_metrics['train_loss']:.3f}",
+            val_acc=f"{val_metrics['val_accuracy']:.3f}",
         )
 
-        val_metrics = trainer.evaluate(val_loader)
-        print(
-            f"Val   | Loss: {val_metrics['val_loss']:.4f} | "
+        tqdm.write(
+            f"Epoch {epoch}/{args.epochs} | "
+            f"Train Loss: {train_metrics['train_loss']:.4f} | "
+            f"Acc: {train_metrics['train_accuracy']:.3f} | "
+            f"F1: {train_metrics['train_f1']:.3f} | "
+            f"Val Loss: {val_metrics['val_loss']:.4f} | "
             f"Acc: {val_metrics['val_accuracy']:.3f} | "
             f"F1: {val_metrics['val_f1']:.3f}"
         )
 
         if not is_baseline:
             lambdas = trainer._get_lambdas()
-            print(f"lambda_p={lambdas['lambda_p']:.6f}  lambda_t={lambdas['lambda_t']:.6f}")
+            tqdm.write(f"  lambda_p={lambdas['lambda_p']:.6f}  lambda_t={lambdas['lambda_t']:.6f}")
 
         if val_metrics["val_accuracy"] > best_val_acc:
             best_val_acc = val_metrics["val_accuracy"]
             epochs_no_improve = 0
             trainer.save_checkpoint(str(ckpt_dir / "best_model.pt"))
-            print(f"  -> Saved best checkpoint (val_acc={best_val_acc:.3f})")
+            tqdm.write(f"  -> Saved best checkpoint (val_acc={best_val_acc:.3f})")
         else:
             epochs_no_improve += 1
 
         trainer.save_checkpoint(str(ckpt_dir / f"epoch_{epoch}.pt"))
 
         if args.patience > 0 and epochs_no_improve >= args.patience:
-            print(f"\nEarly stopping at epoch {epoch} (no improvement for {args.patience} epochs)")
+            tqdm.write(f"Early stopping at epoch {epoch} (no improvement for {args.patience} epochs)")
             break
 
     # Final evaluation on test set
-    print("\n--- Test Evaluation (best checkpoint) ---")
+    tqdm.write("\n--- Test Evaluation (best checkpoint) ---")
     trainer.load_checkpoint(str(ckpt_dir / "best_model.pt"))
     test_metrics = trainer.evaluate(test_loader)
-    print(
+    tqdm.write(
         f"Test  | Loss: {test_metrics['val_loss']:.4f} | "
         f"Acc: {test_metrics['val_accuracy']:.3f} | "
         f"F1: {test_metrics['val_f1']:.3f}"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+from tqdm import tqdm
 
 
 class AmyTrainer:
@@ -77,7 +78,7 @@ class AmyTrainer:
 
         self.optimizer.zero_grad()
 
-        for i, batch in enumerate(dataloader):
+        for i, batch in enumerate(tqdm(dataloader, desc="  Train", leave=False, unit="batch")):
             loss, logits, labels = self.training_step(batch)
             scaled_loss = loss / self.grad_accum_steps
             scaled_loss.backward()
@@ -115,7 +116,7 @@ class AmyTrainer:
         all_preds = []
         all_labels = []
 
-        for batch in dataloader:
+        for batch in tqdm(dataloader, desc="  Eval ", leave=False, unit="batch"):
             loss, logits, labels = self.training_step(batch)
             total_loss += loss.item()
             all_preds.append(logits)
