@@ -16,6 +16,10 @@ This is **Amy-LM**, a research project developing "The Semantic Bridge" - a dise
 | scripts/preprocess.py | Preprocessing orchestrator (FACodec encoding) |
 | tests/ | Test suite (108 tests) |
 
+## Decision Log
+
+- **2026-05-30**: `lambda_p` and `lambda_t` are learnable `nn.Parameter`s initialized to 1.0, NOT CLI flags. Added backward hooks in `AmyTrainer` to log their gradient values (`grad_p`/`grad_t`) each epoch for gradient-flow debugging.
+
 ## Before Starting Any Task
 
 1. **Read CONTEXT.md** to understand domain terminology
