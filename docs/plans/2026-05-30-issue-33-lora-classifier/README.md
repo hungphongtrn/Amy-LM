@@ -3,9 +3,9 @@
 > **For agentic workers:** Use subagent-driven-development. Start with the current phase — don't read ahead.
 
 ## Quick Status
-- **Current Phase:** Phase 1 — LoRA wrapping utility + init tests
-- **Next Up:** Phase 2 — Trainer adaptation (pending Phase 1 completion)
-- **Overall Progress:** 0/4 phases complete
+- **Current Phase:** Phase 2 — Trainer PEFT adaptation
+- **Next Up:** Phase 3 — CLI integration (pending Phase 2 completion)
+- **Overall Progress:** 1/4 phases complete
 
 ## Start Here
 New implementer? Read in this order:
@@ -19,8 +19,8 @@ New implementer? Read in this order:
 
 | Phase | Status | Outcome | Document |
 |-------|--------|---------|----------|
-| 1 — LoRA wrapping utility + init tests | 🔲 Not Started | `wrap_classifier_with_lora()` creates trainable LoRA model; tests assert adapter existence, frozen backbone, trainable FACodec+classifier | [phase-01](./phase-01-lora-wrapping-utility.md) |
-| 2 — Trainer PEFT adaptation | 🔲 Pending | save/load roundtrip passes; λ hooks work through PEFT wrapper | Stub only |
+| 1 — LoRA wrapping utility + init tests | ✅ Complete | `wrap_classifier_with_lora()` creates trainable LoRA model; static init test passes (adapter existence, frozen backbone, trainable FACodec+classifier). Gradient flow test written (GPU blocked). | [phase-01](./phase-01-lora-wrapping-utility.md) |
+| 2 — Trainer PEFT adaptation | 🔲 In Progress | save/load roundtrip passes; λ hooks work through PEFT wrapper | [phase-02](./phase-02-trainer-peft-adaptation.md) |
 | 3 — CLI integration | 🔲 Pending | `--use-lora` flag produces trainable LoRA-wrapped model from CLI | Stub only |
 | 4 — Experiment script | 🔲 Pending | `scripts/train_33_lora_amy.py` launches, trains to convergence | Stub only |
 

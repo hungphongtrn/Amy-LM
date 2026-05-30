@@ -1,5 +1,27 @@
 # Decision Log
 
+## 2026-05-30 (Phase 1 post-implementation): Regex path prefix corrected
+
+**Context:** The regex in `wrap_classifier_with_lora()` initially used `^moss\.audio_adapter|moss\.language_model` but the model is `AmyForProsodyClassification` which nests `AmyMossLM` under `amy_moss`, so module paths start with `amy_moss.moss.`.
+
+**Decision:** Changed regex prefix to `^amy_moss\.moss\.audio_adapter|amy_moss\.moss\.language_model`.
+
+**Consequences:** The regex now correctly matches. This differs from the DPO path which uses bare `moss.*` because DPO wraps `AmyMossLM` directly, not `AmyForProsodyClassification`.
+
+## 2026-05-30 (Phase 1 post-implementation): TemporalPool excluded from trainable assertions
+
+**Context:** `TemporalPool` has no learned parameters — it's a pure functional layer that uses `F.adaptive_avg_pool1d`. Adding it to `modules_to_save` has no effect (PEFT skips parameterless modules silently).
+
+**Decision:** Keep `"amy_moss.temporal_pool"` in `modules_to_save` (harmless, communicates intent) but don't assert its presence in trainable parameter list. Test assertions only check `prosody_embedding`, `timbre_projection`, `residual_fusion`, `classifier`.
+
+## 2026-05-30 (Phase 1 post-implementation): Forward signature — **kwargs passthrough
+
+**Context:** `PeftModelForFeatureExtraction.forward()` imposes a HuggingFace-style signature (`input_ids`, `attention_mask`, `inputs_embeds`, ...) and passes these as kwargs to the underlying model. Our classifier's `forward(audio, prosody_indices, timbre_vector)` would fail with TypeError on unexpected keyword arguments.
+
+**Decision:** Added `**kwargs` to `AmyForProsodyClassification.forward()` to silently accept and ignore PeftModel's HF-style kwargs. Callers must use keyword arguments (`audio=...`, `prosody_indices=...`, `timbre_vector=...`) to avoid the positional args being mapped to `input_ids`/`attention_mask`/`inputs_embeds` by the PeftModel forward.
+
+**Consequences:** The forward signature now accepts extra kwargs. This is a common convention in the HF ecosystem. The classifier's own callers (trainer, evaluation) still use positional args which work fine without PEFT wrapping — the extra `**kwargs` just absorbs nothing in that case.
+
 ## 2026-05-30: audio_adapter LoRA targets added to DPO reference pattern
 
 **Context:** The DPO LoRA pattern (`scripts/train_amy_dpo.py:199-213`) only targets `moss.language_model.*` projection layers. For the classifier path, H2 hypothesizes that the frozen audio_adapter (GatedMLP bridging FACodec-enriched audio to Qwen3) is a gradient choke-point.
