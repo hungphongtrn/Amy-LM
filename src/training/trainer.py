@@ -35,6 +35,9 @@ class AmyTrainer:
         self.is_baseline = is_baseline
         self.max_grad_norm = max_grad_norm
         self.current_epoch = 0
+        self._saved_lambda_grads: dict[str, float] = {}
+        if not is_baseline:
+            self._register_lambda_grad_hooks()
 
     def training_step(
         self, batch: tuple[torch.Tensor, ...]
@@ -162,15 +165,32 @@ class AmyTrainer:
         recall = tp / (tp + fn + 1e-8)
         return 2 * precision * recall / (precision + recall + 1e-8)
 
+    def _register_lambda_grad_hooks(self) -> None:
+        """Register backward hooks on lambda_p/lambda_t to capture gradients."""
+        fusion = self.model.amy_moss.residual_fusion
+
+        def _make_hook(name: str):
+            def hook(grad: torch.Tensor) -> None:
+                self._saved_lambda_grads[name] = grad.detach().cpu().item()
+            return hook
+
+        for name in ("lambda_p", "lambda_t"):
+            param = getattr(fusion, name)
+            param.register_hook(_make_hook(name))
+
     def _get_lambdas(self) -> dict[str, float]:
-        """Return lambda values for Amy model; empty for baseline."""
+        """Return lambda values and gradients for Amy model; empty for baseline."""
         if self.is_baseline:
             return {}
         fusion = self.model.amy_moss.residual_fusion
-        return {
+        result = {
             "lambda_p": fusion.lambda_p.item(),
             "lambda_t": fusion.lambda_t.item(),
         }
+        if self._saved_lambda_grads:
+            result["lambda_p_grad"] = self._saved_lambda_grads.get("lambda_p", 0.0)
+            result["lambda_t_grad"] = self._saved_lambda_grads.get("lambda_t", 0.0)
+        return result
 
     def save_checkpoint(self, path: str) -> None:
         """Save model, optimizer, and epoch state."""

@@ -226,7 +226,13 @@ def main():
 
         if not is_baseline:
             lambdas = trainer._get_lambdas()
-            tqdm.write(f"  lambda_p={lambdas['lambda_p']:.6f}  lambda_t={lambdas['lambda_t']:.6f}")
+            if "lambda_p_grad" in lambdas:
+                tqdm.write(
+                    f"  lambda_p={lambdas['lambda_p']:.6f}  grad_p={lambdas['lambda_p_grad']:.3e}  "
+                    f"lambda_t={lambdas['lambda_t']:.6f}  grad_t={lambdas['lambda_t_grad']:.3e}"
+                )
+            else:
+                tqdm.write(f"  lambda_p={lambdas['lambda_p']:.6f}  lambda_t={lambdas['lambda_t']:.6f}")
 
         if val_metrics[ckpt_metric] >= best_metric:
             best_metric = val_metrics[ckpt_metric]
