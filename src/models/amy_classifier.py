@@ -85,6 +85,7 @@ class AmyForProsodyClassification(nn.Module):
         audio: torch.Tensor,
         prosody_indices: torch.Tensor,
         timbre_vector: torch.Tensor,
+        **kwargs,
     ) -> torch.Tensor:
         """Forward pass: audio + FACodec features → 2-class logits.
 
@@ -92,6 +93,7 @@ class AmyForProsodyClassification(nn.Module):
             audio: Raw waveform [B, T_audio] at 16kHz.
             prosody_indices: FACodec prosody VQ IDs [B, 1, T80].
             timbre_vector: FACodec speaker embedding [B, 256].
+            **kwargs: Accepts HF-style PeftModel passthrough (input_ids, etc.) — ignored.
 
         Returns:
             Logits [B, 2] for binary sarcasm classification.
@@ -118,3 +120,71 @@ class AmyForProsodyClassification(nn.Module):
         mask_float = audio_mask.to(dtype=lm_out.dtype)
         pooled = (lm_out * mask_float.unsqueeze(-1)).sum(dim=1) / mask_float.sum(dim=1, keepdim=True).clamp(min=1)
         return self.classifier(pooled)
+
+
+def wrap_classifier_with_lora(
+    model: AmyForProsodyClassification,
+    r: int = 8,
+    lora_alpha: int = 16,
+    lora_dropout: float = 0.05,
+):
+    """Wrap AmyForProsodyClassification with LoRA for H2 gradient-flow test.
+
+    LoRA targets (via regex):
+      - moss.audio_adapter.* (gate_proj, up_proj, down_proj)  [GatedMLP]
+      - moss.language_model.* (q_proj, k_proj, v_proj, o_proj,   [Qwen3]
+                               up_proj, down_proj, gate_proj)
+
+    modules_to_save (fully trainable, fp32):
+      - amy_moss.prosody_embedding
+      - amy_moss.timbre_projection
+      - amy_moss.temporal_pool
+      - amy_moss.residual_fusion
+      - classifier
+
+    Audio encoder stays frozen (no LoRA, no modules_to_save).
+
+    Args:
+        model: AmyForProsodyClassification instance (frozen backbone, trainable FACodec+head).
+        r: LoRA rank (default: 8, matches DPO).
+        lora_alpha: LoRA alpha (default: 16, matches DPO).
+        lora_dropout: LoRA dropout (default: 0.05, matches DPO).
+
+    Returns:
+        PeftModel wrapping the classifier.
+    """
+    from peft import LoraConfig, TaskType, get_peft_model
+
+    for module in (
+        model.amy_moss.prosody_embedding,
+        model.amy_moss.timbre_projection,
+        model.amy_moss.temporal_pool,
+        model.amy_moss.residual_fusion,
+    ):
+        module.to(dtype=torch.float32)
+
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    print(f"Pre-LoRA trainable: {trainable:,}/{total:,} ({100 * trainable / total:.1f}%)")
+
+    lora_config = LoraConfig(
+        r=r,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        target_modules=(
+            r"^(?:amy_moss\.moss\.audio_adapter|amy_moss\.moss\.language_model)"
+            r".*\.(q_proj|k_proj|v_proj|o_proj|up_proj|down_proj|gate_proj)$"
+        ),
+        modules_to_save=[
+            "amy_moss.prosody_embedding",
+            "amy_moss.timbre_projection",
+            "amy_moss.temporal_pool",
+            "amy_moss.residual_fusion",
+            "classifier",
+        ],
+        bias="none",
+        task_type=TaskType.FEATURE_EXTRACTION,
+    )
+    peft_model = get_peft_model(model, lora_config)
+    peft_model.print_trainable_parameters()
+    return peft_model
