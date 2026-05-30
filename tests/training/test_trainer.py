@@ -135,6 +135,33 @@ class TestCheckpoint:
             trainer.model.classifier.weight, trainer2.model.classifier.weight
         )
 
+    def test_save_load_roundtrip_lora(self, tmp_path, require_gpu, device):
+        from src.models.amy_classifier import (
+            AmyForProsodyClassification,
+            wrap_classifier_with_lora,
+        )
+        from src.training.trainer import AmyTrainer
+
+        vectors = torch.randn(1024, 2560, device=device)
+        model = AmyForProsodyClassification(warm_start_vectors=vectors, device=device)
+        peft_model = wrap_classifier_with_lora(model, r=2, lora_alpha=4, lora_dropout=0.0)
+        trainer = AmyTrainer(peft_model, device=device, is_baseline=False, is_lora=True)
+        trainer.current_epoch = 5
+        path = tmp_path / "checkpoint_lora.pt"
+        trainer.save_checkpoint(str(path))
+
+        model2 = AmyForProsodyClassification(warm_start_vectors=vectors, device=device)
+        peft_model2 = wrap_classifier_with_lora(model2, r=2, lora_alpha=4, lora_dropout=0.0)
+        trainer2 = AmyTrainer(peft_model2, device=device, is_baseline=False, is_lora=True)
+        trainer2.load_checkpoint(str(path))
+
+        assert trainer2.current_epoch == 5
+        for (n1, p1), (n2, p2) in zip(
+            trainer.model.named_parameters(), trainer2.model.named_parameters()
+        ):
+            if p1.requires_grad:
+                assert torch.equal(p1, p2), f"Mismatch in {n1}"
+
 
 class TestLambdaLogging:
     """Verify lambda_p and lambda_t are logged for Amy, excluded for baseline.

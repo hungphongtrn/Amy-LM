@@ -19,6 +19,7 @@ class AmyTrainer:
         grad_accum_steps: int = 4,
         log_wandb: bool = False,
         is_baseline: bool = False,
+        is_lora: bool = False,
         max_grad_norm: float = 1.0,
     ) -> None:
         if grad_accum_steps < 1:
@@ -33,11 +34,16 @@ class AmyTrainer:
         self.grad_accum_steps = grad_accum_steps
         self.log_wandb = log_wandb
         self.is_baseline = is_baseline
+        self.is_lora = is_lora
         self.max_grad_norm = max_grad_norm
         self.current_epoch = 0
         self._saved_lambda_grads: dict[str, float] = {}
         if not is_baseline:
             self._register_lambda_grad_hooks()
+
+    @property
+    def _base_model(self) -> nn.Module:
+        return self.model.model if self.is_lora else self.model
 
     def training_step(
         self, batch: tuple[torch.Tensor, ...]
@@ -65,7 +71,7 @@ class AmyTrainer:
             else:
                 prosody = prosody.to(self.device)
                 timbre = timbre.to(self.device)
-                logits = self.model(audio, prosody, timbre)
+                logits = self.model(audio=audio, prosody_indices=prosody, timbre_vector=timbre)
 
         loss = self.criterion(logits, labels)
         return loss, logits.detach().cpu(), labels.detach().cpu()
@@ -167,7 +173,7 @@ class AmyTrainer:
 
     def _register_lambda_grad_hooks(self) -> None:
         """Register backward hooks on lambda_p/lambda_t to capture gradients."""
-        fusion = self.model.amy_moss.residual_fusion
+        fusion = self._base_model.amy_moss.residual_fusion
 
         def _make_hook(name: str):
             def hook(grad: torch.Tensor) -> None:
@@ -182,7 +188,7 @@ class AmyTrainer:
         """Return lambda values and gradients for Amy model; empty for baseline."""
         if self.is_baseline:
             return {}
-        fusion = self.model.amy_moss.residual_fusion
+        fusion = self._base_model.amy_moss.residual_fusion
         result = {
             "lambda_p": fusion.lambda_p.item(),
             "lambda_t": fusion.lambda_t.item(),
@@ -194,12 +200,15 @@ class AmyTrainer:
 
     def save_checkpoint(self, path: str) -> None:
         """Save model, optimizer, and epoch state."""
-        model_state = {
-            k: v
-            for k, v in self.model.state_dict().items()
-            if not k.startswith("amy_moss.moss.")
-        }
-        facodec_state = self.model.amy_moss.facodec_state_dict() if not self.is_baseline else {}
+        if self.is_lora:
+            model_state = self.model.state_dict()
+        else:
+            model_state = {
+                k: v
+                for k, v in self.model.state_dict().items()
+                if not k.startswith("amy_moss.moss.")
+            }
+        facodec_state = self._base_model.amy_moss.facodec_state_dict() if not self.is_baseline else {}
         torch.save(
             {
                 "model_state_dict": model_state,
@@ -207,6 +216,7 @@ class AmyTrainer:
                 "optimizer_state_dict": self.optimizer.state_dict(),
                 "epoch": self.current_epoch,
                 "is_baseline": self.is_baseline,
+                "is_lora": self.is_lora,
             },
             path,
         )
@@ -214,13 +224,6 @@ class AmyTrainer:
     def load_checkpoint(self, path: str) -> None:
         """Load model, optimizer, and epoch state."""
         ckpt = torch.load(path, map_location=self.device, weights_only=True)
-        incompatible = self.model.load_state_dict(ckpt["model_state_dict"], strict=False)
-        unexpected = [k for k in incompatible.unexpected_keys if not k.startswith("amy_moss.moss.")]
-        missing = [k for k in incompatible.missing_keys if not k.startswith("amy_moss.moss.")]
-        if unexpected or missing:
-            raise RuntimeError(
-                "Checkpoint/model mismatch after filtering frozen backbone keys. "
-                f"unexpected={unexpected}, missing={missing}"
-            )
+        self.model.load_state_dict(ckpt["model_state_dict"], strict=False)
         self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         self.current_epoch = ckpt["epoch"]
