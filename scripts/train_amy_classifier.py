@@ -118,6 +118,14 @@ def parse_args():
         default="aligned",
         help="FACodec feature alignment: 'aligned' (standard) or 'shuffled' (negative control). Only valid with --mode amy.",
     )
+    p.add_argument(
+        "--use-lora",
+        action="store_true",
+        help="Wrap classifier with PEFT LoRA on audio_adapter + language_model",
+    )
+    p.add_argument("--lora-r", type=int, default=8, help="LoRA rank (default: 8)")
+    p.add_argument("--lora-alpha", type=int, default=16, help="LoRA alpha (default: 16)")
+    p.add_argument("--lora-dropout", type=float, default=0.05, help="LoRA dropout (default: 0.05)")
     return p.parse_args()
 
 
@@ -177,6 +185,18 @@ def main():
         )
     model = model.to(device)
 
+    # LoRA wrapping (Amy mode only)
+    use_lora = args.use_lora and not is_baseline
+    if use_lora:
+        from src.models.amy_classifier import wrap_classifier_with_lora
+
+        model = wrap_classifier_with_lora(
+            model,
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+        )
+
     # W&B
     if args.wandb:
         import wandb
@@ -192,6 +212,7 @@ def main():
         grad_accum_steps=args.grad_accum,
         log_wandb=args.wandb,
         is_baseline=is_baseline,
+        is_lora=use_lora,
         max_grad_norm=args.max_grad_norm,
     )
 
@@ -277,7 +298,12 @@ def main():
         "checkpoint_metric": ckpt_metric,
         "best_checkpoint_value": best_metric,
         "facodec_control": args.facodec_control,
+        "use_lora": use_lora,
     }
+    if use_lora:
+        results["lora_r"] = args.lora_r
+        results["lora_alpha"] = args.lora_alpha
+        results["lora_dropout"] = args.lora_dropout
     with open(out_dir / "results.json", "w") as f:
         json.dump(results, f, indent=2)
     print(f"\nResults saved to {out_dir / 'results.json'}")
