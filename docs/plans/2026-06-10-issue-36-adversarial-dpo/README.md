@@ -3,17 +3,15 @@
 > **For agentic workers:** Use subagent-driven-development. Start with the current phase — don't read ahead.
 
 ## Quick Status
-- **Current Phase:** Phase 2 — Dataset Encoding + Lambda Hooks (code complete, pending run)
-- **Next Up:** Phase 3 — Training + Gate (pending Phase 2 execution on training machine)
-- **Overall Progress:** 2/3 phases code-complete (0/3 phases executed)
+- **Current Phase:** Phase 3 — Training + Gate (detailed, ready for execution after Phase 2)
+- **Overall Progress:** 3/3 phases code-complete, 3/3 plans detailed (0/3 phases executed)
 
 ## Start Here
 New implementer? Read in this order:
 1. [strategy.md](./strategy.md) — Understand the big picture (5 min)
-2. [phase-01-generation-pipeline.md](./phase-01-generation-pipeline.md) — Current detailed phase (15 min)
-3. [decisions.md](./decisions.md) — Context on choices made (optional, 5 min)
-
-**Do NOT read future phases.** They're stubbed and will change based on Phase 1 learnings.
+2. [phase-01-generation-pipeline.md](./phase-01-generation-pipeline.md) — Adversarial pair generation (15 min)
+3. [phase-02-encoding-hooks.md](./phase-02-encoding-hooks.md) — FACodec encoding + λ hooks (10 min)
+4. [phase-03-training-gate.md](./phase-03-training-gate.md) — Run B training + decision gate (10 min)
 
 ## Phase Overview
 
@@ -21,7 +19,7 @@ New implementer? Read in this order:
 |-------|--------|---------|----------|
 | 1 — Generation | Code Complete | 1,000+ adversarial pairs (JSONL) | [phase-01-generation-pipeline.md](./phase-01-generation-pipeline.md) |
 | 2 — Encoding + Hooks | Code Complete | Dataset on HF Hub + λ gradient logging | [phase-02-encoding-hooks.md](./phase-02-encoding-hooks.md) |
-| 3 — Training + Gate | Pending | Run B complete, λ movement evaluated | Stub only |
+| 3 — Training + Gate | Detailed | Run B complete, λ movement evaluated | [phase-03-training-gate.md](./phase-03-training-gate.md) |
 
 ## Key Decisions
 See [decisions.md](./decisions.md) for rationale on major choices.

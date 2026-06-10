@@ -240,7 +240,7 @@ class TestAdversarialDatasetProcessor:
                 "chosen": "c",
                 "rejected": "r",
                 "strategy": "my strategy",
-                "emotion_label": "angry",
+                "emotion_label": "happy",
                 "inverse_emotion": "neutral",
                 "judge_fidelity_chosen": 4,
                 "judge_fidelity_rejected": 5,
@@ -255,7 +255,7 @@ class TestAdversarialDatasetProcessor:
 
         sample = result[0]
         assert sample["strategy"] == "my strategy"
-        assert sample["emotion_label"] == "angry"
+        assert sample["emotion_label"] == "happy"
         assert sample["inverse_emotion"] == "neutral"
         assert sample["judge_fidelity_chosen"] == 4
         assert sample["judge_fidelity_rejected"] == 5

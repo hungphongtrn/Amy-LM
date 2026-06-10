@@ -126,8 +126,8 @@ def test_log_injects_lambda_grads_when_populated(monkeypatch):
     logs = {"loss": 0.5}
     trainer.log(logs)
 
-    assert logs["lambda_p"] == 0.5
-    assert logs["lambda_t"] == 0.3
+    assert abs(logs["lambda_p"] - 0.5) < 1e-6
+    assert abs(logs["lambda_t"] - 0.3) < 1e-6
     assert logs["lambda_p_grad"] == 0.1
     assert logs["lambda_t_grad"] == 0.2
 
@@ -177,7 +177,7 @@ def test_log_handles_peft_like_model(monkeypatch):
     logs = {"loss": 0.5}
     trainer.log(logs)
 
-    assert logs["lambda_p"] == 0.7
+    assert abs(logs["lambda_p"] - 0.7) < 1e-6
 
 
 def test_hooks_registered_for_peft_like_model(monkeypatch):
