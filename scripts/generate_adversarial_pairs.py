@@ -194,8 +194,7 @@ class SemanticGate:
 JUDGE_PROMPT_TEMPLATE = """You are evaluating the quality of a preference pair for speech-language DPO training.
 
 The speaker's transcript: {transcript}
-The speaker's ground-truth emotion: {emotion_label}
-The inverse emotion used for the rejected response: {inverse_emotion}
+Two emotions are relevant to this pair: "{emotion_label}" and "{inverse_emotion}" — but you do NOT know which response is intended for which.
 
 Here are two responses, presented in random order:
 
@@ -203,17 +202,23 @@ Response A: {response_a}
 Response B: {response_b}
 
 For each response, rate:
-1. Emotion Fidelity (1-5): How well does this response reflect the ground-truth emotion ({emotion_label})?
-2. Text-Ambiguity (1-5): How hard would it be for a text-only reader to identify the correct emotion from this response ALONE? (1 = impossible to tell, 5 = obvious from text)
+1. Emotional Expressiveness (1-5): How strongly does this response convey AN emotion (any emotion)? 5 = vivid emotional tone, 1 = completely flat/neutral.
+2. Text-Ambiguity (1-5): How hard would it be for a text-only reader to identify WHICH SPECIFIC emotion this response is expressing? 1 = impossible to tell which emotion, 5 = the intended emotion is obvious from text alone.
 
-A good adversarial pair should have HIGH fidelity (>=4) and LOW ambiguity (<=2) for both responses.
+Then answer:
+3. Which response better matches the transcript's emotion "{emotion_label}"? Answer "A", "B", or "neither" (if text alone cannot distinguish them).
+
+A good adversarial pair has:
+- Both responses are emotionally expressive (fidelity >= 4)
+- Neither response reveals its intended emotion from text alone (ambiguity <= 2)
+- You cannot identify which is which from text ("identified_correct" = "neither")
 
 Output JSON with keys:
 - "fidelity_A": integer 1-5
 - "fidelity_B": integer 1-5
 - "ambiguity_A": integer 1-5
 - "ambiguity_B": integer 1-5
-- "identified_correct": which response shows emotion "{emotion_label}" more clearly: "A" or "B" or "neither"
+- "identified_correct": "A" or "B" or "neither"
 """
 
 
@@ -285,19 +290,22 @@ async def judge_pair(
         "fidelity_rejected": fidelity_rejected,
         "ambiguity_chosen": ambiguity_chosen,
         "ambiguity_rejected": ambiguity_rejected,
+        "identified_correct": judge_data.get("identified_correct", "neither"),
     }
 
 
-def passes_judge_gate(judge_result: dict) -> bool:
-    fidelity_ok = (
-        judge_result["fidelity_chosen"] >= 4
-        and judge_result["fidelity_rejected"] >= 4
-    )
-    ambiguity_ok = (
-        judge_result["ambiguity_chosen"] <= 2
-        and judge_result["ambiguity_rejected"] <= 2
-    )
-    return fidelity_ok and ambiguity_ok
+def passes_judge_gate(judge_result: dict) -> tuple[bool, str]:
+    if judge_result["fidelity_chosen"] < 4:
+        return False, f"fidelity_chosen={judge_result['fidelity_chosen']} (< 4)"
+    if judge_result["fidelity_rejected"] < 4:
+        return False, f"fidelity_rejected={judge_result['fidelity_rejected']} (< 4)"
+    if judge_result["ambiguity_chosen"] > 2:
+        return False, f"ambiguity_chosen={judge_result['ambiguity_chosen']} (> 2)"
+    if judge_result["ambiguity_rejected"] > 2:
+        return False, f"ambiguity_rejected={judge_result['ambiguity_rejected']} (> 2)"
+    if judge_result.get("identified_correct", "neither") != "neither":
+        return False, f"identified_correct={judge_result.get('identified_correct')} (expected 'neither')"
+    return True, "passed"
 
 
 MAX_RETRIES = 3
@@ -443,14 +451,9 @@ async def run_adversarial_generation(
                 failed_count += 1
             return
 
-        if not passes_judge_gate(judge_result):
-            async_tqdm.write(
-                f"  JUDGE_GATE {sample['id']}: "
-                f"f_chosen={judge_result['fidelity_chosen']}, "
-                f"f_rejected={judge_result['fidelity_rejected']}, "
-                f"a_chosen={judge_result['ambiguity_chosen']}, "
-                f"a_rejected={judge_result['ambiguity_rejected']}"
-            )
+        judge_ok, judge_reason = passes_judge_gate(judge_result)
+        if not judge_ok:
+            async_tqdm.write(f"  JUDGE_GATE {sample['id']}: {judge_reason}")
             async with lock:
                 rejected_count += 1
             return
@@ -466,6 +469,7 @@ async def run_adversarial_generation(
             "judge_fidelity_rejected": judge_result["fidelity_rejected"],
             "judge_ambiguity_chosen": judge_result["ambiguity_chosen"],
             "judge_ambiguity_rejected": judge_result["ambiguity_rejected"],
+            "judge_identified_correct": judge_result["identified_correct"],
             "generation_attempts": pair["attempt"],
         }
         async with lock:

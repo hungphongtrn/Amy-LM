@@ -142,8 +142,11 @@ def test_passes_judge_gate_all_pass():
         "fidelity_rejected": 4,
         "ambiguity_chosen": 1,
         "ambiguity_rejected": 2,
+        "identified_correct": "neither",
     }
-    assert passes_judge_gate(result)
+    ok, reason = passes_judge_gate(result)
+    assert ok
+    assert reason == "passed"
 
 
 def test_passes_judge_gate_fidelity_fail():
@@ -152,8 +155,11 @@ def test_passes_judge_gate_fidelity_fail():
         "fidelity_rejected": 5,
         "ambiguity_chosen": 1,
         "ambiguity_rejected": 1,
+        "identified_correct": "neither",
     }
-    assert not passes_judge_gate(result)
+    ok, reason = passes_judge_gate(result)
+    assert not ok
+    assert "fidelity_chosen" in reason
 
 
 def test_passes_judge_gate_ambiguity_fail():
@@ -162,8 +168,24 @@ def test_passes_judge_gate_ambiguity_fail():
         "fidelity_rejected": 5,
         "ambiguity_chosen": 3,
         "ambiguity_rejected": 1,
+        "identified_correct": "neither",
     }
-    assert not passes_judge_gate(result)
+    ok, reason = passes_judge_gate(result)
+    assert not ok
+    assert "ambiguity_chosen" in reason
+
+
+def test_passes_judge_gate_identified_fail():
+    result = {
+        "fidelity_chosen": 5,
+        "fidelity_rejected": 5,
+        "ambiguity_chosen": 1,
+        "ambiguity_rejected": 1,
+        "identified_correct": "A",
+    }
+    ok, reason = passes_judge_gate(result)
+    assert not ok
+    assert "identified_correct" in reason
 
 
 def test_count_pairs():
