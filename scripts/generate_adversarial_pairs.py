@@ -16,6 +16,20 @@ from collections import Counter
 
 import numpy as np
 
+import asyncio
+import argparse
+import os
+import signal
+import sys
+
+from datasets import Dataset
+from dotenv import load_dotenv
+from openai import AsyncOpenAI
+from sentence_transformers import SentenceTransformer
+from tqdm.asyncio import tqdm as async_tqdm
+
+load_dotenv()
+
 # "other" is skipped from mapping but still generates pairs; quality filters decide survival
 INVERSE_EMOTION = {
     "happy": "sad",
@@ -264,3 +278,254 @@ def passes_judge_gate(judge_result: dict) -> bool:
         and judge_result["ambiguity_rejected"] <= 2
     )
     return fidelity_ok and ambiguity_ok
+
+
+MAX_RETRIES = 3
+
+
+async def generate_single_pair(
+    client: AsyncOpenAI,
+    transcript: str,
+    emotion_label: str,
+    inverse_emotion: str,
+    semaphore: asyncio.Semaphore,
+) -> dict | None:
+    prompt = ADVERSARIAL_PROMPT_TEMPLATE.format(
+        transcript=transcript,
+        emotion_label=emotion_label,
+        inverse_emotion=inverse_emotion,
+    )
+
+    for attempt in range(MAX_RETRIES):
+        temperature = 0.7 + attempt * 0.15
+        async with semaphore:
+            response = await client.chat.completions.create(
+                model="deepseek-v4-flash",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                temperature=temperature,
+                max_tokens=2048,
+            )
+        try:
+            data = parse_adversarial_response(response.choices[0].message.content)
+            return {
+                "chosen": data["chosen"],
+                "rejected": data["rejected"],
+                "strategy": data.get("strategy", ""),
+                "attempt": attempt + 1,
+            }
+        except ValueError:
+            if attempt < MAX_RETRIES - 1:
+                continue
+            raise
+    return None
+
+
+def load_existing_ids(output_path: str) -> set:
+    if not os.path.exists(output_path):
+        return set()
+    ids = set()
+    with open(output_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                ids.add(entry.get("id", ""))
+            except json.JSONDecodeError:
+                pass
+    return ids
+
+
+async def run_adversarial_generation(
+    dataset,
+    output_path: str,
+    concurrency: int = 5,
+    smoke: bool = False,
+    stop_event: asyncio.Event | None = None,
+) -> None:
+    existing_ids = load_existing_ids(output_path)
+    pending = [s for s in dataset if s["id"] not in existing_ids]
+    if smoke:
+        pending = pending[:10]
+
+    if not pending:
+        print(f"All {len(dataset)} samples already processed in {output_path}", flush=True)
+        return
+
+    print(f"Processing {len(pending)} samples ({len(existing_ids)} already done)", flush=True)
+
+    embedding_model = SentenceTransformer("google/embeddinggemma-300m")
+    semantic_gate = SemanticGate()
+
+    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    if not api_key:
+        print("ERROR: DEEPSEEK_API_KEY environment variable not set.", flush=True)
+        sys.exit(1)
+
+    client = AsyncOpenAI(
+        api_key=api_key,
+        base_url="https://api.deepseek.com",
+        max_retries=1,
+        timeout=30.0,
+    )
+    semaphore = asyncio.Semaphore(concurrency)
+    lock = asyncio.Lock()
+    failed_count = 0
+    passed_count = 0
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+
+    async def process_sample(sample):
+        nonlocal failed_count, passed_count
+        emotion = sample.get("emotion_label", "")
+        inverse = get_inverse_emotion(emotion)
+        if inverse is None:
+            return
+
+        try:
+            pair = await generate_single_pair(
+                client,
+                sample.get("transcript_with_tags", sample.get("bare_transcript", "")),
+                emotion,
+                inverse,
+                semaphore,
+            )
+            if pair is None:
+                return
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            async with lock:
+                failed_count += 1
+            async_tqdm.write(f"  GEN_FAILED {sample['id']}: {e}")
+            return
+
+        ok, gate_info = semantic_gate.check(pair["chosen"], pair["rejected"], embedding_model)
+        if not ok:
+            async_tqdm.write(f"  SEMANTIC_GATE {sample['id']}: {gate_info}")
+            return
+
+        try:
+            judge_result = await judge_pair(
+                client,
+                sample.get("transcript_with_tags", sample.get("bare_transcript", "")),
+                emotion,
+                inverse,
+                pair["chosen"],
+                pair["rejected"],
+            )
+        except Exception as e:
+            async_tqdm.write(f"  JUDGE_FAILED {sample['id']}: {e}")
+            async with lock:
+                failed_count += 1
+            return
+
+        if not passes_judge_gate(judge_result):
+            async_tqdm.write(
+                f"  JUDGE_GATE {sample['id']}: "
+                f"f_chosen={judge_result['fidelity_chosen']}, "
+                f"f_rejected={judge_result['fidelity_rejected']}, "
+                f"a_chosen={judge_result['ambiguity_chosen']}, "
+                f"a_rejected={judge_result['ambiguity_rejected']}"
+            )
+            return
+
+        output = {
+            "id": sample.get("id", ""),
+            "chosen": pair["chosen"],
+            "rejected": pair["rejected"],
+            "strategy": pair["strategy"],
+            "emotion_label": emotion,
+            "inverse_emotion": inverse,
+            "judge_fidelity_chosen": judge_result["fidelity_chosen"],
+            "judge_fidelity_rejected": judge_result["fidelity_rejected"],
+            "judge_ambiguity_chosen": judge_result["ambiguity_chosen"],
+            "judge_ambiguity_rejected": judge_result["ambiguity_rejected"],
+            "generation_attempts": pair["attempt"],
+        }
+        async with lock:
+            with open(output_path, "a") as f:
+                json.dump(output, f)
+                f.write("\n")
+            passed_count += 1
+
+    tasks = [asyncio.create_task(process_sample(s)) for s in pending]
+
+    with async_tqdm(total=len(pending), desc="Generating adversarial pairs") as pbar:
+        for coro in asyncio.as_completed(tasks):
+            try:
+                await coro
+            except asyncio.CancelledError:
+                pass
+            pbar.update(1)
+            if stop_event and stop_event.is_set():
+                async_tqdm.write("Cancelling remaining tasks...")
+                for t in tasks:
+                    t.cancel()
+
+    completed = len(load_existing_ids(output_path))
+    print(
+        f"Done: {completed} pairs in {output_path} "
+        f"({failed_count} failed, {passed_count} passed this run)",
+        flush=True,
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate adversarial DPO preference pairs from NVTTS"
+    )
+    parser.add_argument(
+        "--input",
+        default="data/nvtts_enriched/nvtts_enriched.parquet",
+        help="Enriched NVTTS parquet file",
+    )
+    parser.add_argument(
+        "--output",
+        default="data/nvtts_adversarial/pairs.jsonl",
+        help="Output JSONL path",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=int(os.environ.get("DEEPSEEK_CONCURRENCY", "5")),
+        help="Number of concurrent API calls",
+    )
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Smoke test: process only 10 samples",
+    )
+    args = parser.parse_args()
+
+    ds = Dataset.from_parquet(args.input)
+    print(f"Loaded {len(ds)} samples from {args.input}")
+
+    sys.stdout.reconfigure(line_buffering=True)
+
+    stop_event = asyncio.Event()
+
+    def _on_sigint(signum, frame):
+        print("\nInterrupted, finishing in-flight requests...", flush=True)
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, _on_sigint)
+
+    try:
+        asyncio.run(
+            run_adversarial_generation(
+                ds,
+                args.output,
+                concurrency=args.concurrency,
+                smoke=args.smoke,
+                stop_event=stop_event,
+            )
+        )
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()
