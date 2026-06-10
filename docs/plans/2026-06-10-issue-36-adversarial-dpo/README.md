@@ -3,9 +3,9 @@
 > **For agentic workers:** Use subagent-driven-development. Start with the current phase — don't read ahead.
 
 ## Quick Status
-- **Current Phase:** Phase 1 — Adversarial Pair Generation Pipeline
-- **Next Up:** Phase 2 — Dataset Encoding + Lambda Hooks (pending Phase 1 completion)
-- **Overall Progress:** 0/3 phases complete
+- **Current Phase:** Phase 1 — Adversarial Pair Generation Pipeline (code complete, pending run)
+- **Next Up:** Phase 2 — Dataset Encoding + Lambda Hooks (pending Phase 1 execution on training machine)
+- **Overall Progress:** 1/3 phases code-complete (0/3 phases executed)
 
 ## Start Here
 New implementer? Read in this order:
@@ -19,7 +19,7 @@ New implementer? Read in this order:
 
 | Phase | Status | Outcome | Document |
 |-------|--------|---------|----------|
-| 1 — Generation | Not Started | 1,000+ adversarial pairs (JSONL) | [phase-01-generation-pipeline.md](./phase-01-generation-pipeline.md) |
+| 1 — Generation | Code Complete | 1,000+ adversarial pairs (JSONL) | [phase-01-generation-pipeline.md](./phase-01-generation-pipeline.md) |
 | 2 — Encoding + Hooks | Pending | Dataset on HF Hub + λ gradient logging | Stub only |
 | 3 — Training + Gate | Pending | Run B complete, λ movement evaluated | Stub only |
 
