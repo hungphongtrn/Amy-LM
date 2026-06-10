@@ -103,7 +103,7 @@ class PreferenceDatasetProcessor:
         matched: List[tuple[Dict[str, Any], Dict[str, Any]]] = []
         for i in range(len(nvtts_dataset)):
             row = nvtts_dataset[i]
-            sample_id = row.get("id", "")
+            sample_id = row.get("id") or row.get("index", "")
             if sample_id in pairs_by_id:
                 matched.append((row, pairs_by_id[sample_id]))
 
@@ -134,8 +134,17 @@ class PreferenceDatasetProcessor:
 
     def _extract_audio_tensor(self, row: Dict[str, Any]) -> torch.Tensor:
         audio = row["audio"]
-        array = audio["array"] if isinstance(audio, dict) else audio
 
+        if isinstance(audio, dict):
+            array = audio["array"]
+        elif hasattr(audio, "get_all_samples"):
+            tensor = audio.get_all_samples().data
+            return tensor.float().squeeze(0)
+        else:
+            array = audio
+
+        if isinstance(array, torch.Tensor):
+            return array.float().squeeze(0)
         if isinstance(array, (bytes, bytearray)):
             array = np.frombuffer(array, dtype=np.float32)
         elif isinstance(array, list):
@@ -146,7 +155,7 @@ class PreferenceDatasetProcessor:
         return torch.from_numpy(array).float()
 
     def _build_processed_entry(self, row: Dict[str, Any], streams: Any, dataset_tag: str) -> Dict[str, Any]:
-        sample_id = row.get("id", "?")
+        sample_id = row.get("id") or row.get("index", "?")
         prosody_tensor = streams.prosody_codebooks_idx
         if prosody_tensor is None or prosody_tensor.numel() == 0:
             raise ValueError(f"Empty prosody stream for sample {sample_id}")
@@ -161,19 +170,34 @@ class PreferenceDatasetProcessor:
         timbre = timbre_tensor.tolist()
 
         audio = row["audio"]
-        audio_array = audio.get("array") if isinstance(audio, dict) else audio
-        if isinstance(audio_array, list):
+        if isinstance(audio, dict):
+            audio_array = audio.get("array")
+            audio_sr = audio.get("sampling_rate", 16000)
+            audio_path = audio.get("path")
+        elif hasattr(audio, "get_all_samples"):
+            samples = audio.get_all_samples()
+            audio_array = samples.data.squeeze(0).numpy().astype(np.float32)
+            audio_sr = audio.metadata.sample_rate
+            audio_path = None
+        else:
+            audio_array = audio
+            audio_sr = 16000
+            audio_path = None
+
+        if isinstance(audio_array, torch.Tensor):
+            audio_array = audio_array.numpy().astype(np.float32)
+        elif isinstance(audio_array, list):
             audio_array = np.array(audio_array, dtype=np.float32)
         elif isinstance(audio_array, (bytes, bytearray)):
             audio_array = np.frombuffer(audio_array, dtype=np.float32)
 
         return {
             "dataset": row.get("dataset", dataset_tag),
-            "id": row.get("id", ""),
+            "id": row.get("id") or row.get("index", ""),
             "audio": {
-                "path": audio.get("path") if isinstance(audio, dict) else None,
+                "path": audio_path,
                 "array": audio_array,
-                "sampling_rate": audio.get("sampling_rate", 16000) if isinstance(audio, dict) else 16000,
+                "sampling_rate": audio_sr,
             },
             "prosody_codebooks_idx": prosody,
             "timbre_vector": timbre,
@@ -195,7 +219,7 @@ class PreferenceDatasetProcessor:
     def _build_adversarial_entry(
         self, row: Dict[str, Any], pair: Dict[str, Any], streams: Any, dataset_tag: str
     ) -> Dict[str, Any]:
-        sample_id = row.get("id", "?")
+        sample_id = row.get("id") or row.get("index", "?")
         prosody_tensor = streams.prosody_codebooks_idx
         if prosody_tensor is None or prosody_tensor.numel() == 0:
             raise ValueError(f"Empty prosody stream for sample {sample_id}")
@@ -210,19 +234,34 @@ class PreferenceDatasetProcessor:
         timbre = timbre_tensor.tolist()
 
         audio = row["audio"]
-        audio_array = audio.get("array") if isinstance(audio, dict) else audio
-        if isinstance(audio_array, list):
+        if isinstance(audio, dict):
+            audio_array = audio.get("array")
+            audio_sr = audio.get("sampling_rate", 16000)
+            audio_path = audio.get("path")
+        elif hasattr(audio, "get_all_samples"):
+            samples = audio.get_all_samples()
+            audio_array = samples.data.squeeze(0).numpy().astype(np.float32)
+            audio_sr = audio.metadata.sample_rate
+            audio_path = None
+        else:
+            audio_array = audio
+            audio_sr = 16000
+            audio_path = None
+
+        if isinstance(audio_array, torch.Tensor):
+            audio_array = audio_array.numpy().astype(np.float32)
+        elif isinstance(audio_array, list):
             audio_array = np.array(audio_array, dtype=np.float32)
         elif isinstance(audio_array, (bytes, bytearray)):
             audio_array = np.frombuffer(audio_array, dtype=np.float32)
 
         return {
             "dataset": row.get("dataset", dataset_tag),
-            "id": row.get("id", ""),
+            "id": row.get("id") or row.get("index", ""),
             "audio": {
-                "path": audio.get("path") if isinstance(audio, dict) else None,
+                "path": audio_path,
                 "array": audio_array,
-                "sampling_rate": audio.get("sampling_rate", 16000) if isinstance(audio, dict) else 16000,
+                "sampling_rate": audio_sr,
             },
             "prosody_codebooks_idx": prosody,
             "timbre_vector": timbre,
