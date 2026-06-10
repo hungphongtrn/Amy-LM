@@ -1,5 +1,7 @@
 # Agent Instructions
 
+This is developer machine so do not install packages, running command, etc on this machine. After development, it needs to be committed, pushed and pulled on training machine to be able to run. THIS IS IMPORTANT
+
 **Branch: `exp/amylm-facodec`** — Amy LM with FACodec. No Mimi, no compressor trainer.
 
 ## Project Context

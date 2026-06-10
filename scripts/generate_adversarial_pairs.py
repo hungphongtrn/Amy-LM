@@ -224,6 +224,7 @@ async def judge_pair(
     inverse_emotion: str,
     chosen: str,
     rejected: str,
+    semaphore: asyncio.Semaphore,
 ) -> dict:
     if random.random() < 0.5:
         response_a, response_b = chosen, rejected
@@ -240,24 +241,33 @@ async def judge_pair(
         response_b=response_b,
     )
 
-    response = await client.chat.completions.create(
-        model="deepseek-v4-flash",
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
-        temperature=0.0,
-        max_tokens=512,
-    )
-    content = response.choices[0].message.content
-    try:
-        judge_data = json.loads(content)
-    except json.JSONDecodeError:
-        if "```json" in content:
-            block = content.split("```json")[1].split("```")[0]
-        elif "```" in content:
-            block = content.split("```")[1].split("```")[0]
-        else:
-            block = content
-        judge_data = json.loads(block.strip())
+    for attempt in range(MAX_RETRIES):
+        try:
+            async with semaphore:
+                response = await client.chat.completions.create(
+                    model="deepseek-v4-flash",
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"},
+                    temperature=0.0,
+                    max_tokens=512,
+                )
+            content = response.choices[0].message.content
+            try:
+                judge_data = json.loads(content)
+            except json.JSONDecodeError:
+                if "```json" in content:
+                    block = content.split("```json")[1].split("```")[0]
+                elif "```" in content:
+                    block = content.split("```")[1].split("```")[0]
+                else:
+                    block = content
+                judge_data = json.loads(block.strip())
+            break
+        except Exception:
+            if attempt < MAX_RETRIES - 1:
+                await asyncio.sleep(1.0 * (attempt + 1))
+                continue
+            raise
 
     if a_is_chosen:
         fidelity_chosen = judge_data.get("fidelity_A", 0)
@@ -425,6 +435,7 @@ async def run_adversarial_generation(
                 inverse,
                 pair["chosen"],
                 pair["rejected"],
+                semaphore,
             )
         except Exception as e:
             async_tqdm.write(f"  JUDGE_FAILED {sample['id']}: {e}")
@@ -459,8 +470,7 @@ async def run_adversarial_generation(
         }
         async with lock:
             with open(output_path, "a") as f:
-                json.dump(output, f)
-                f.write("\n")
+                f.write(json.dumps(output) + "\n")
             passed_count += 1
 
     tasks = [asyncio.create_task(process_sample(s)) for s in pending]
