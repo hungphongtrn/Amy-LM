@@ -21,6 +21,7 @@ This is **Amy-LM**, a research project developing "The Semantic Bridge" - a dise
 ## Decision Log
 
 - **2026-05-30**: `lambda_p` and `lambda_t` are learnable `nn.Parameter`s initialized to 1.0, NOT CLI flags. Added backward hooks in `AmyTrainer` to log their gradient values (`grad_p`/`grad_t`) each epoch for gradient-flow debugging.
+- **2026-06-10 (Phase 2)**: Ported lambda gradient hooks to `AmyDPOTrainer` (same pattern as `AmyTrainer`). PEFT-compatible via `unwrap_model` + `__getattr__` forwarding chain. Extended `PreferenceDatasetProcessor` with `process_adversarial_dataset()` and `ADVERSARIAL_FEATURES` schema. Adversarial pairs have `cosine_similarity=0.0` (always passes literal-pair filter). `rationale_chosen`/`rationale_rejected` set to empty for adversarial pairs.
 
 ## Before Starting Any Task
 
