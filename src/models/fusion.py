@@ -15,12 +15,15 @@ class ResidualFusion(nn.Module):
 
     Args:
         hidden_dim: Dimensionality of all streams (default=2560)
+        dropout: Dropout probability on the residual sum before the outer LayerNorm (default=0.1).
+            Preserves identity when all λ=0 (dropout(0)=0).
     """
 
-    def __init__(self, hidden_dim: int = 2560):
+    def __init__(self, hidden_dim: int = 2560, dropout: float = 0.1):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.norm = nn.LayerNorm(hidden_dim)
+        self.dropout = nn.Dropout(dropout)
         self.norm_p = nn.LayerNorm(hidden_dim)
         self.norm_c = nn.LayerNorm(hidden_dim)
         self.norm_a = nn.LayerNorm(hidden_dim)
@@ -59,4 +62,4 @@ class ResidualFusion(nn.Module):
             residual = residual + self.lambda_a * self.norm_a(acoustic)
         if timbre is not None:
             residual = residual + self.lambda_t * self.norm_t(timbre)
-        return self.norm(semantic + residual)
+        return self.norm(semantic + self.dropout(residual))

@@ -27,10 +27,11 @@ class AmyTrainer:
 
         self.model = model
         self.device = device
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
         self.optimizer = torch.optim.AdamW(
-            model.parameters(), lr=lr, weight_decay=weight_decay
+            trainable_params, lr=lr, weight_decay=weight_decay
         )
-        self.criterion = nn.CrossEntropyLoss()
+        self.criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
         self.grad_accum_steps = grad_accum_steps
         self.log_wandb = log_wandb
         self.is_baseline = is_baseline

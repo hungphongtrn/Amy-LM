@@ -25,6 +25,7 @@ class AmyForProsodyClassification(nn.Module):
             for warm-starting ProsodyEmbedding.
         num_classes: Number of output classes (default: 2 for binary sarcasm).
         gradient_checkpointing: Enable gradient checkpointing on Qwen3 LM.
+        classifier_dropout: Dropout probability before the classifier head (default: 0.3).
     """
 
     def __init__(
@@ -37,6 +38,7 @@ class AmyForProsodyClassification(nn.Module):
         warm_start_vectors: torch.Tensor | None = None,
         num_classes: int = 2,
         gradient_checkpointing: bool = False,
+        classifier_dropout: float = 0.3,
     ) -> None:
         super().__init__()
         if device is None:
@@ -72,6 +74,7 @@ class AmyForProsodyClassification(nn.Module):
             self.amy_moss._warm_start_prosody(warm_start_vectors)
 
         backbone_device = next(self.amy_moss.parameters()).device
+        self.classifier_dropout = nn.Dropout(classifier_dropout)
         self.classifier = nn.Linear(amy_config.hidden_dim, num_classes, device=backbone_device)
 
         if gradient_checkpointing:
@@ -119,6 +122,7 @@ class AmyForProsodyClassification(nn.Module):
 
         mask_float = audio_mask.to(dtype=lm_out.dtype)
         pooled = (lm_out * mask_float.unsqueeze(-1)).sum(dim=1) / mask_float.sum(dim=1, keepdim=True).clamp(min=1)
+        pooled = self.classifier_dropout(pooled)
         return self.classifier(pooled)
 
 

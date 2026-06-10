@@ -30,7 +30,7 @@ def make_timbre(batch=2, seq=25):
 class TestResidualFusion:
     @pytest.fixture
     def fusion(self):
-        return ResidualFusion(hidden_dim=HIDDEN_DIM)
+        return ResidualFusion(hidden_dim=HIDDEN_DIM).eval()
 
     def test_output_shape_matches_semantic(self, fusion):
         """Output shape matches semantic input shape."""

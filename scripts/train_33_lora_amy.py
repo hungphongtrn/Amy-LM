@@ -5,15 +5,17 @@ LoRA adapters on audio_adapter + language_model projection layers.
 FACodec modules + classifier fully trainable via modules_to_save.
 
 Usage:
-    python scripts/train_33_lora_amy.py            # defaults (no W&B)
-    python scripts/train_33_lora_amy.py --wandb    # with W&B logging
+    python scripts/train_33_lora_amy.py                                     # LoRA + aligned FACodec (no W&B)
+    python scripts/train_33_lora_amy.py --wandb                             # with W&B logging
+    python scripts/train_33_lora_amy.py --facodec-control shuffled --wandb  # LoRA-only isolation (shuffled FACodec)
 
 Prerequisites:
     python scripts/setup.py        # one-time: download checkpoints + MUStARD data
 
 Output:
-    checkpoints/training_lora_amy/best_model.pt
-    outputs/training_lora_amy/results.json  (includes lambda_p, lambda_t, LoRA config)
+    checkpoints/training_lora_amy/best_model.pt          (aligned)
+    checkpoints/training_lora_amy_shuffled/best_model.pt (shuffled)
+    Outputs include lambda_p, lambda_t, LoRA config, facodec_control
 """
 
 from __future__ import annotations
@@ -63,6 +65,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--lora-r", type=int, default=8)
     p.add_argument("--lora-alpha", type=int, default=16)
     p.add_argument("--lora-dropout", type=float, default=0.05)
+    p.add_argument(
+        "--facodec-control",
+        type=str,
+        choices=["aligned", "shuffled"],
+        default="aligned",
+        help="FACodec feature alignment (default: aligned). Use 'shuffled' to isolate LoRA-only gains from FACodec+LoRA.",
+    )
     return p.parse_args(argv)
 
 
@@ -74,19 +83,21 @@ def main(argv: list[str] | None = None) -> int:
     data_path = args.data_path or str(parquet)
     facodec_ckpt = args.facodec_checkpoint or str(decoder)
 
+    suffix = "_shuffled" if args.facodec_control == "shuffled" else ""
     cmd = [
         sys.executable, str(PROJECT_ROOT / "scripts" / "train_amy_classifier.py"),
         "--data-path", data_path,
         "--mode", "amy",
         "--device", args.device,
         "--facodec-checkpoint", facodec_ckpt,
+        "--facodec-control", args.facodec_control,
         "--epochs", str(args.epochs),
         "--lr", str(args.lr),
         "--batch-size", str(args.batch_size),
         "--grad-accum", str(args.grad_accum),
         "--seed", str(args.seed),
-        "--checkpoint-dir", str(PROJECT_ROOT / "checkpoints" / "training_lora_amy"),
-        "--output-dir", str(PROJECT_ROOT / "outputs" / "training_lora_amy"),
+        "--checkpoint-dir", str(PROJECT_ROOT / "checkpoints" / f"training_lora_amy{suffix}"),
+        "--output-dir", str(PROJECT_ROOT / "outputs" / f"training_lora_amy{suffix}"),
         "--patience", str(args.patience),
         "--checkpoint-metric", "val_f1",
         "--use-lora",
@@ -97,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     ]
     cmd = [a for a in cmd if a]
 
+    print(f"FACodec control: {args.facodec_control} ({'LoRA-only isolation' if args.facodec_control == 'shuffled' else 'LoRA + FACodec signal'})")
     print(f"FACodec decoder: {facodec_ckpt}")
     print(f"Data: {data_path}")
     print(f"LoRA config: r={args.lora_r}, alpha={args.lora_alpha}, dropout={args.lora_dropout}")
