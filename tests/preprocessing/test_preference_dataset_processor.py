@@ -1,3 +1,5 @@
+import json
+import os
 import unittest.mock
 
 import numpy as np
@@ -166,3 +168,277 @@ class TestPreferenceDatasetProcessor:
         result = processor.process_dataset(dataset)
         for sample in result:
             assert sample["dataset"] == "nvtts-preference"
+
+
+def _make_adversarial_jsonl(tmp_path, pairs_data: list[dict]) -> str:
+    jsonl_path = tmp_path / "pairs.jsonl"
+    with open(jsonl_path, "w") as f:
+        for p in pairs_data:
+            f.write(json.dumps(p) + "\n")
+    return str(jsonl_path)
+
+
+class TestAdversarialDatasetProcessor:
+    def test_output_columns(self, tmp_path):
+        """Adversarial output has all standard + adversarial columns."""
+        jsonl_path = _make_adversarial_jsonl(tmp_path, [
+            {
+                "id": "sample_0",
+                "chosen": "adv chosen 0",
+                "rejected": "adv rejected 0",
+                "strategy": "test strategy",
+                "emotion_label": "happy",
+                "inverse_emotion": "sad",
+                "judge_fidelity_chosen": 5,
+                "judge_fidelity_rejected": 4,
+                "judge_ambiguity_chosen": 2,
+                "judge_ambiguity_rejected": 1,
+                "generation_attempts": 1,
+            },
+        ])
+        nvtts = _make_mock_preference_dataset(1)
+        processor = _get_processor()
+        result = processor.process_adversarial_dataset(jsonl_path, nvtts)
+
+        assert "inverse_emotion" in result.column_names
+        assert "strategy" in result.column_names
+        assert "judge_fidelity_chosen" in result.column_names
+        assert "judge_ambiguity_chosen" in result.column_names
+        assert "generation_attempts" in result.column_names
+        assert "chosen" in result.column_names
+        assert "rejected" in result.column_names
+
+    def test_chosen_rejected_from_adversarial(self, tmp_path):
+        """Chosen/rejected come from adversarial pairs, not original NVTTS."""
+        jsonl_path = _make_adversarial_jsonl(tmp_path, [
+            {
+                "id": "sample_0",
+                "chosen": "ADVERSARIAL CHOSEN",
+                "rejected": "ADVERSARIAL REJECTED",
+                "strategy": "s",
+                "emotion_label": "happy",
+                "inverse_emotion": "sad",
+                "judge_fidelity_chosen": 5,
+                "judge_fidelity_rejected": 5,
+                "judge_ambiguity_chosen": 1,
+                "judge_ambiguity_rejected": 1,
+                "generation_attempts": 1,
+            },
+        ])
+        nvtts = _make_mock_preference_dataset(1)
+        processor = _get_processor()
+        result = processor.process_adversarial_dataset(jsonl_path, nvtts)
+
+        assert result[0]["chosen"] == "ADVERSARIAL CHOSEN"
+        assert result[0]["rejected"] == "ADVERSARIAL REJECTED"
+
+    def test_adversarial_metadata_preserved(self, tmp_path):
+        """Judge scores, inverse emotion, strategy, generation_attempts survive."""
+        jsonl_path = _make_adversarial_jsonl(tmp_path, [
+            {
+                "id": "sample_0",
+                "chosen": "c",
+                "rejected": "r",
+                "strategy": "my strategy",
+                "emotion_label": "angry",
+                "inverse_emotion": "neutral",
+                "judge_fidelity_chosen": 4,
+                "judge_fidelity_rejected": 5,
+                "judge_ambiguity_chosen": 2,
+                "judge_ambiguity_rejected": 1,
+                "generation_attempts": 3,
+            },
+        ])
+        nvtts = _make_mock_preference_dataset(1)
+        processor = _get_processor()
+        result = processor.process_adversarial_dataset(jsonl_path, nvtts)
+
+        sample = result[0]
+        assert sample["strategy"] == "my strategy"
+        assert sample["emotion_label"] == "angry"
+        assert sample["inverse_emotion"] == "neutral"
+        assert sample["judge_fidelity_chosen"] == 4
+        assert sample["judge_fidelity_rejected"] == 5
+        assert sample["judge_ambiguity_chosen"] == 2
+        assert sample["judge_ambiguity_rejected"] == 1
+        assert sample["generation_attempts"] == 3
+
+    def test_no_matching_pairs_raises(self, tmp_path):
+        """ValueError when no JSONL ids match NVTTS ids."""
+        jsonl_path = _make_adversarial_jsonl(tmp_path, [
+            {
+                "id": "no_such_id",
+                "chosen": "c",
+                "rejected": "r",
+                "strategy": "",
+                "emotion_label": "",
+                "inverse_emotion": "",
+                "judge_fidelity_chosen": 0,
+                "judge_fidelity_rejected": 0,
+                "judge_ambiguity_chosen": 0,
+                "judge_ambiguity_rejected": 0,
+                "generation_attempts": 0,
+            },
+        ])
+        nvtts = _make_mock_preference_dataset(1)
+        processor = _get_processor()
+        with pytest.raises(ValueError, match="No matching adversarial pairs"):
+            processor.process_adversarial_dataset(jsonl_path, nvtts)
+
+    def test_cosine_similarity_is_zero(self, tmp_path):
+        """Adversarial pairs have cosine_similarity=0.0 (always passes filter)."""
+        jsonl_path = _make_adversarial_jsonl(tmp_path, [
+            {
+                "id": "sample_0",
+                "chosen": "c",
+                "rejected": "r",
+                "strategy": "",
+                "emotion_label": "",
+                "inverse_emotion": "",
+                "judge_fidelity_chosen": 5,
+                "judge_fidelity_rejected": 5,
+                "judge_ambiguity_chosen": 1,
+                "judge_ambiguity_rejected": 1,
+                "generation_attempts": 1,
+            },
+        ])
+        nvtts = _make_mock_preference_dataset(1)
+        processor = _get_processor()
+        result = processor.process_adversarial_dataset(jsonl_path, nvtts)
+        assert result[0]["cosine_similarity"] == 0.0
+
+    def test_label_is_neg_one(self, tmp_path):
+        """Label is -1 for all adversarial samples."""
+        jsonl_path = _make_adversarial_jsonl(tmp_path, [
+            {
+                "id": "sample_0",
+                "chosen": "c",
+                "rejected": "r",
+                "strategy": "",
+                "emotion_label": "",
+                "inverse_emotion": "",
+                "judge_fidelity_chosen": 0,
+                "judge_fidelity_rejected": 0,
+                "judge_ambiguity_chosen": 0,
+                "judge_ambiguity_rejected": 0,
+                "generation_attempts": 0,
+            },
+        ])
+        nvtts = _make_mock_preference_dataset(1)
+        processor = _get_processor()
+        result = processor.process_adversarial_dataset(jsonl_path, nvtts)
+        assert result[0]["label"] == -1
+
+    def test_only_matching_ids_processed(self, tmp_path):
+        """Only NVTTS samples with matching adversarial pair ids are included."""
+        jsonl_path = _make_adversarial_jsonl(tmp_path, [
+            {
+                "id": "sample_1",
+                "chosen": "c1",
+                "rejected": "r1",
+                "strategy": "",
+                "emotion_label": "",
+                "inverse_emotion": "",
+                "judge_fidelity_chosen": 5,
+                "judge_fidelity_rejected": 5,
+                "judge_ambiguity_chosen": 0,
+                "judge_ambiguity_rejected": 0,
+                "generation_attempts": 1,
+            },
+        ])
+        nvtts = _make_mock_preference_dataset(3)
+        processor = _get_processor()
+        result = processor.process_adversarial_dataset(jsonl_path, nvtts)
+        assert len(result) == 1
+        assert result[0]["id"] == "sample_1"
+
+    def test_has_prosody_and_timbre(self, tmp_path):
+        """Prosody and timbre streams are present with correct shapes."""
+        jsonl_path = _make_adversarial_jsonl(tmp_path, [
+            {
+                "id": "sample_0",
+                "chosen": "c",
+                "rejected": "r",
+                "strategy": "",
+                "emotion_label": "",
+                "inverse_emotion": "",
+                "judge_fidelity_chosen": 5,
+                "judge_fidelity_rejected": 5,
+                "judge_ambiguity_chosen": 0,
+                "judge_ambiguity_rejected": 0,
+                "generation_attempts": 1,
+            },
+        ])
+        nvtts = _make_mock_preference_dataset(1)
+        processor = _get_processor()
+        result = processor.process_adversarial_dataset(jsonl_path, nvtts)
+        assert len(result[0]["prosody_codebooks_idx"]) > 0
+        assert len(result[0]["timbre_vector"]) == 256
+
+    def test_rationale_fields_are_empty(self, tmp_path):
+        """Rationale fields are empty for adversarial pairs (not applicable)."""
+        jsonl_path = _make_adversarial_jsonl(tmp_path, [
+            {
+                "id": "sample_0",
+                "chosen": "c",
+                "rejected": "r",
+                "strategy": "",
+                "emotion_label": "",
+                "inverse_emotion": "",
+                "judge_fidelity_chosen": 5,
+                "judge_fidelity_rejected": 5,
+                "judge_ambiguity_chosen": 0,
+                "judge_ambiguity_rejected": 0,
+                "generation_attempts": 1,
+            },
+        ])
+        nvtts = _make_mock_preference_dataset(1)
+        processor = _get_processor()
+        result = processor.process_adversarial_dataset(jsonl_path, nvtts)
+        assert result[0]["rationale_chosen"] == ""
+        assert result[0]["rationale_rejected"] == ""
+
+    def test_dataset_tag_default(self, tmp_path):
+        """Default dataset tag for adversarial is 'nvtts-adversarial'."""
+        jsonl_path = _make_adversarial_jsonl(tmp_path, [
+            {
+                "id": "sample_0",
+                "chosen": "c",
+                "rejected": "r",
+                "strategy": "",
+                "emotion_label": "",
+                "inverse_emotion": "",
+                "judge_fidelity_chosen": 5,
+                "judge_fidelity_rejected": 5,
+                "judge_ambiguity_chosen": 0,
+                "judge_ambiguity_rejected": 0,
+                "generation_attempts": 1,
+            },
+        ])
+        nvtts = _make_mock_preference_dataset(1)
+        processor = _get_processor()
+        result = processor.process_adversarial_dataset(jsonl_path, nvtts)
+        assert result[0]["dataset"] == "nvtts-adversarial"
+
+    def test_skips_content_acoustic(self, tmp_path):
+        """Content and acoustic codebooks are NOT in adversarial output."""
+        jsonl_path = _make_adversarial_jsonl(tmp_path, [
+            {
+                "id": "sample_0",
+                "chosen": "c",
+                "rejected": "r",
+                "strategy": "",
+                "emotion_label": "",
+                "inverse_emotion": "",
+                "judge_fidelity_chosen": 5,
+                "judge_fidelity_rejected": 5,
+                "judge_ambiguity_chosen": 0,
+                "judge_ambiguity_rejected": 0,
+                "generation_attempts": 1,
+            },
+        ])
+        nvtts = _make_mock_preference_dataset(1)
+        processor = _get_processor()
+        result = processor.process_adversarial_dataset(jsonl_path, nvtts)
+        assert "content_codebooks_idx" not in result.column_names
+        assert "acoustic_codebooks_idx" not in result.column_names

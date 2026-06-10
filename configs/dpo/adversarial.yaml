@@ -1,0 +1,44 @@
+# Adversarial DPO training config — Run B for Issue #36.
+# Same hyperparameters as base.yaml but targeting the adversarial dataset.
+# Override via CLI:  python scripts/train_amy_dpo.py --config configs/dpo/adversarial.yaml --num-epochs 5
+
+# ── Model ───────────────────────────────────────────────────────────────────
+model: OpenMOSS-Team/MOSS-Audio-4B-Thinking       # Pretrained MOSS-Audio ID or local path
+
+# ── Dataset ─────────────────────────────────────────────────────────────────
+dataset: hungphongtrn/nvtts_facodec_adversarial    # Adversarial preference pairs (Phase 2 output)
+cosine_threshold: 0.85                              # Effectively no-op for adversarial pairs (all set to 0.0)
+                                                     # Kept for compatibility with load_and_filter_dataset
+
+# ── LoRA ────────────────────────────────────────────────────────────────────
+lora_r: 8
+lora_alpha: 16
+lora_dropout: 0.05
+
+# ── DPO ─────────────────────────────────────────────────────────────────────
+beta: 0.1
+
+precompute_ref_batch_size: null
+
+# ── Optimization ────────────────────────────────────────────────────────────
+learning_rate: 5.0e-5
+warmup_ratio: 0.1
+max_length: 1024
+per_device_batch_size: 1
+gradient_accumulation_steps: 4
+num_epochs: 3.0
+max_grad_norm: 1.0
+optim: paged_adamw_8bit
+
+# ── Logging & Checkpointing ─────────────────────────────────────────────────
+output_dir: ./output/amy_dpo_adversarial
+logging_steps: 10
+save_steps: 500
+eval_steps: 500
+save_total_limit: 3
+wandb_project: amy-lm-dpo
+wandb_run_name: adversarial-run-b
+no_wandb: false
+
+# ── Misc ────────────────────────────────────────────────────────────────────
+seed: 42

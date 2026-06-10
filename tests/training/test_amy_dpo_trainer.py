@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 import torch
@@ -73,3 +73,124 @@ def test_lambda_logging(monkeypatch):
     assert "lambda_t" in logs
     assert abs(logs["lambda_p"] - 0.5) < 1e-6
     assert abs(logs["lambda_t"] - 0.3) < 1e-6
+
+
+def test_saved_lambda_grads_initialized(monkeypatch):
+    monkeypatch.setattr(DPOTrainer, "__init__", _stub_dpo_init)
+
+    trainer = AmyDPOTrainer(model=MockAmyMossLM())
+    assert hasattr(trainer, "_saved_lambda_grads")
+    assert trainer._saved_lambda_grads == {}
+
+
+def test_lambda_grad_hooks_registered(monkeypatch):
+    monkeypatch.setattr(DPOTrainer, "__init__", _stub_dpo_init)
+
+    model = MockAmyMossLM()
+    trainer = AmyDPOTrainer(model=model)
+
+    lambda_p = model.residual_fusion.lambda_p
+    lambda_t = model.residual_fusion.lambda_t
+
+    assert len(lambda_p._backward_hooks) == 1
+    assert len(lambda_t._backward_hooks) == 1
+
+
+def test_lambda_grad_hook_fires(monkeypatch):
+    monkeypatch.setattr(DPOTrainer, "__init__", _stub_dpo_init)
+
+    model = MockAmyMossLM()
+    trainer = AmyDPOTrainer(model=model)
+
+    lambda_p = model.residual_fusion.lambda_p
+    lambda_p.grad = torch.tensor(0.42)
+
+    for handle in lambda_p._backward_hooks.values():
+        handle(lambda_p.grad)
+
+    assert "lambda_p" in trainer._saved_lambda_grads
+    assert abs(trainer._saved_lambda_grads["lambda_p"] - 0.42) < 1e-6
+
+
+def test_log_injects_lambda_grads_when_populated(monkeypatch):
+    monkeypatch.setattr(DPOTrainer, "__init__", _stub_dpo_init)
+    monkeypatch.setattr(DPOTrainer, "log", lambda self, logs, *args, **kwargs: None)
+
+    model = MockAmyMossLM()
+    model.residual_fusion.lambda_p.data = torch.tensor(0.5)
+    model.residual_fusion.lambda_t.data = torch.tensor(0.3)
+
+    trainer = AmyDPOTrainer(model=model)
+    trainer._saved_lambda_grads = {"lambda_p": 0.1, "lambda_t": 0.2}
+
+    logs = {"loss": 0.5}
+    trainer.log(logs)
+
+    assert logs["lambda_p"] == 0.5
+    assert logs["lambda_t"] == 0.3
+    assert logs["lambda_p_grad"] == 0.1
+    assert logs["lambda_t_grad"] == 0.2
+
+
+def test_log_skips_grads_when_not_populated(monkeypatch):
+    monkeypatch.setattr(DPOTrainer, "__init__", _stub_dpo_init)
+    monkeypatch.setattr(DPOTrainer, "log", lambda self, logs, *args, **kwargs: None)
+
+    model = MockAmyMossLM()
+    trainer = AmyDPOTrainer(model=model)
+    assert trainer._saved_lambda_grads == {}
+
+    logs = {"loss": 0.5}
+    trainer.log(logs)
+
+    assert "lambda_p_grad" not in logs
+    assert "lambda_t_grad" not in logs
+
+
+def test_log_handles_missing_fusion_gracefully(monkeypatch):
+    monkeypatch.setattr(DPOTrainer, "__init__", _stub_dpo_init)
+    monkeypatch.setattr(DPOTrainer, "log", lambda self, logs, *args, **kwargs: None)
+
+    class ModelWithoutFusion(nn.Module):
+        pass
+
+    trainer = AmyDPOTrainer(model=ModelWithoutFusion())
+    logs = {"loss": 0.5}
+    trainer.log(logs)
+
+    assert "lambda_p" not in logs
+
+
+def test_log_handles_peft_like_model(monkeypatch):
+    monkeypatch.setattr(DPOTrainer, "__init__", _stub_dpo_init)
+    monkeypatch.setattr(DPOTrainer, "log", lambda self, logs, *args, **kwargs: None)
+
+    base = MockAmyMossLM()
+    base.residual_fusion.lambda_p.data = torch.tensor(0.7)
+
+    class PEFTLikeModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.base_model = base
+
+    trainer = AmyDPOTrainer(model=PEFTLikeModel())
+    logs = {"loss": 0.5}
+    trainer.log(logs)
+
+    assert logs["lambda_p"] == 0.7
+
+
+def test_hooks_registered_for_peft_like_model(monkeypatch):
+    monkeypatch.setattr(DPOTrainer, "__init__", _stub_dpo_init)
+
+    base = MockAmyMossLM()
+
+    class PEFTLikeModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.base_model = base
+
+    trainer = AmyDPOTrainer(model=PEFTLikeModel())
+
+    assert len(base.residual_fusion.lambda_p._backward_hooks) == 1
+    assert len(base.residual_fusion.lambda_t._backward_hooks) == 1

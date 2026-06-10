@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import torch
 from trl import DPOConfig, DPOTrainer
 
 
@@ -11,6 +12,7 @@ class AmyDPOTrainer(DPOTrainer):
     Key differences from standard DPOTrainer:
      - precompute_ref_log_probs=True by default (lambda-zero at init)
      - Logs lambda_p and lambda_t from AmyLM's ResidualFusion gates
+     - Ports lambda gradient hooks from AmyTrainer for monitoring gradient flow
      - Passes AmyLM-specific kwargs (audio_data, prosody_indices, etc.)
        through to model.forward() automatically via TRL's model_kwargs passthrough
     """
@@ -50,14 +52,37 @@ class AmyDPOTrainer(DPOTrainer):
             **kwargs,
         )
 
+        self._saved_lambda_grads: dict[str, float] = {}
+        self._register_lambda_grad_hooks()
+
+    def _register_lambda_grad_hooks(self) -> None:
+        try:
+            model = self.accelerator.unwrap_model(self.model)
+            base_model = getattr(model, "base_model", model)
+            fusion = base_model.residual_fusion
+
+            def _make_hook(name: str):
+                def hook(grad: torch.Tensor) -> None:
+                    self._saved_lambda_grads[name] = grad.detach().cpu().item()
+                return hook
+
+            for name in ("lambda_p", "lambda_t"):
+                param = getattr(fusion, name)
+                param.register_hook(_make_hook(name))
+        except AttributeError:
+            pass
+
     def log(self, logs: dict[str, float], *args, **kwargs) -> None:
-        """Inject lambda_p and lambda_t into TRL's log output."""
+        """Inject lambda_p, lambda_t, and their gradients into TRL's log output."""
         try:
             model = self.accelerator.unwrap_model(self.model)
             base_model = getattr(model, "base_model", model)
             fusion = base_model.residual_fusion
             logs["lambda_p"] = float(fusion.lambda_p.item())
             logs["lambda_t"] = float(fusion.lambda_t.item())
+            if self._saved_lambda_grads:
+                logs["lambda_p_grad"] = self._saved_lambda_grads.get("lambda_p", 0.0)
+                logs["lambda_t_grad"] = self._saved_lambda_grads.get("lambda_t", 0.0)
         except AttributeError:
             pass
         super().log(logs, *args, **kwargs)
