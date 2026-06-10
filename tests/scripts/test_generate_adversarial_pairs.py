@@ -1,8 +1,10 @@
-import pytest
-import sys
+import json as _json
 import os
+import sys
+import tempfile
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))
 
@@ -11,6 +13,7 @@ from generate_adversarial_pairs import (
     compute_bleu1,
     compute_length_parity_ratio,
     cosine_similarity,
+    count_pairs,
     get_inverse_emotion,
     parse_adversarial_response,
     passes_judge_gate,
@@ -59,12 +62,15 @@ def test_parse_empty_strings_raises():
         parse_adversarial_response('{"strategy": "", "chosen": "", "rejected": ""}')
 
 
-class MockEmbedder:
+class DeterministicEmbedder:
+    def __init__(self, seed: int = 42):
+        self._rng = np.random.RandomState(seed)
+
     def encode(self, texts):
-        return np.random.randn(len(texts), 128).astype(np.float32)
+        return np.array([self._rng.randn(128) for _ in texts], dtype=np.float32)
 
 
-mock_embedder = MockEmbedder()
+mock_embedder = DeterministicEmbedder()
 
 
 def test_length_parity_equal():
@@ -158,3 +164,22 @@ def test_passes_judge_gate_ambiguity_fail():
         "ambiguity_rejected": 1,
     }
     assert not passes_judge_gate(result)
+
+
+def test_count_pairs():
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        _json.dump({"id": "1", "chosen": "a", "rejected": "b", "emotion_label": "happy"}, f)
+        f.write("\n")
+        _json.dump({"id": "2", "chosen": "c", "rejected": "d", "emotion_label": "sad"}, f)
+        f.write("\n")
+        _json.dump({"id": "3", "chosen": "e", "rejected": "f", "emotion_label": "happy"}, f)
+        f.write("\n")
+        tmp_path = f.name
+
+    try:
+        stats = count_pairs(tmp_path)
+        assert stats["total"] == 3
+        assert stats["emotions"]["happy"] == 2
+        assert stats["emotions"]["sad"] == 1
+    finally:
+        os.unlink(tmp_path)

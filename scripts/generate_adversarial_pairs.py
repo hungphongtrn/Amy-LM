@@ -247,7 +247,17 @@ async def judge_pair(
         temperature=0.0,
         max_tokens=512,
     )
-    judge_data = json.loads(response.choices[0].message.content)
+    content = response.choices[0].message.content
+    try:
+        judge_data = json.loads(content)
+    except json.JSONDecodeError:
+        if "```json" in content:
+            block = content.split("```json")[1].split("```")[0]
+        elif "```" in content:
+            block = content.split("```")[1].split("```")[0]
+        else:
+            block = content
+        judge_data = json.loads(block.strip())
 
     if a_is_chosen:
         fidelity_chosen = judge_data.get("fidelity_A", 0)
@@ -289,7 +299,7 @@ async def generate_single_pair(
     emotion_label: str,
     inverse_emotion: str,
     semaphore: asyncio.Semaphore,
-) -> dict | None:
+) -> dict:
     prompt = ADVERSARIAL_PROMPT_TEMPLATE.format(
         transcript=transcript,
         emotion_label=emotion_label,
@@ -318,7 +328,6 @@ async def generate_single_pair(
             if attempt < MAX_RETRIES - 1:
                 continue
             raise
-    return None
 
 
 def load_existing_ids(output_path: str) -> set:
@@ -373,12 +382,13 @@ async def run_adversarial_generation(
     semaphore = asyncio.Semaphore(concurrency)
     lock = asyncio.Lock()
     failed_count = 0
+    rejected_count = 0
     passed_count = 0
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
     async def process_sample(sample):
-        nonlocal failed_count, passed_count
+        nonlocal failed_count, rejected_count, passed_count
         emotion = sample.get("emotion_label", "")
         inverse = get_inverse_emotion(emotion)
         if inverse is None:
@@ -392,8 +402,6 @@ async def run_adversarial_generation(
                 inverse,
                 semaphore,
             )
-            if pair is None:
-                return
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -405,6 +413,8 @@ async def run_adversarial_generation(
         ok, gate_info = semantic_gate.check(pair["chosen"], pair["rejected"], embedding_model)
         if not ok:
             async_tqdm.write(f"  SEMANTIC_GATE {sample['id']}: {gate_info}")
+            async with lock:
+                rejected_count += 1
             return
 
         try:
@@ -430,6 +440,8 @@ async def run_adversarial_generation(
                 f"a_chosen={judge_result['ambiguity_chosen']}, "
                 f"a_rejected={judge_result['ambiguity_rejected']}"
             )
+            async with lock:
+                rejected_count += 1
             return
 
         output = {
@@ -468,9 +480,29 @@ async def run_adversarial_generation(
     completed = len(load_existing_ids(output_path))
     print(
         f"Done: {completed} pairs in {output_path} "
-        f"({failed_count} failed, {passed_count} passed this run)",
+        f"({failed_count} failed, {rejected_count} rejected, {passed_count} passed this run)",
         flush=True,
     )
+
+
+def count_pairs(jsonl_path: str) -> dict:
+    """Count pairs in JSONL output, grouped by emotion label."""
+    pairs = []
+    with open(jsonl_path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                pairs.append(json.loads(line))
+
+    emotion_counts = {}
+    for p in pairs:
+        e = p.get("emotion_label", "unknown")
+        emotion_counts[e] = emotion_counts.get(e, 0) + 1
+
+    return {
+        "total": len(pairs),
+        "emotions": emotion_counts,
+    }
 
 
 def main():
@@ -498,7 +530,21 @@ def main():
         action="store_true",
         help="Smoke test: process only 10 samples",
     )
+    parser.add_argument(
+        "--count",
+        type=str,
+        default=None,
+        help="Count statistics for an existing JSONL file without generating",
+    )
     args = parser.parse_args()
+
+    if args.count:
+        stats = count_pairs(args.count)
+        print(f"Total pairs: {stats['total']}")
+        print("Emotion distribution:")
+        for emotion, count in sorted(stats["emotions"].items()):
+            print(f"  {emotion}: {count}")
+        return
 
     ds = Dataset.from_parquet(args.input)
     print(f"Loaded {len(ds)} samples from {args.input}")
